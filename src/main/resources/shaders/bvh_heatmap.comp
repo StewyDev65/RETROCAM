@@ -1,0 +1,104 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Output: one pixel per thread
+layout(rgba32f, binding = 0) uniform image2D u_output;
+
+// ── Camera uniforms ──────────────────────────────────────────────────────────
+uniform mat4  u_invView;        // inverse view matrix
+uniform mat4  u_invProj;        // inverse projection matrix
+uniform vec3  u_eyePos;
+uniform ivec2 u_resolution;
+
+// ── BVH SSBO (binding 1) ─────────────────────────────────────────────────────
+struct BVHNode {
+    vec3  aabbMin; float pad0;
+    vec3  aabbMax; float pad1;
+    int   leftChild;
+    int   rightChild;
+    int   primStart;
+    int   primCount;   // > 0 = leaf
+};
+
+layout(std430, binding = 1) readonly buffer BVHBuffer {
+    BVHNode nodes[];
+};
+
+// ── Ray-AABB intersection ────────────────────────────────────────────────────
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, out float tmin) {
+    vec3 t0 = (bmin - ro) * invRd;
+    vec3 t1 = (bmax - ro) * invRd;
+    vec3 tlo = min(t0, t1);
+    vec3 thi = max(t0, t1);
+    tmin = max(max(tlo.x, tlo.y), tlo.z);
+    float tmax = min(min(thi.x, thi.y), thi.z);
+    return tmax >= max(tmin, 0.0);
+}
+
+// ── BVH traversal — counts nodes visited ─────────────────────────────────────
+int traverseCount(vec3 ro, vec3 rd) {
+    vec3 invRd = 1.0 / rd;
+    int  stack[64];
+    int  stackTop = 0;
+    stack[stackTop++] = 0;
+
+    int visited = 0;
+    while (stackTop > 0) {
+        int idx = stack[--stackTop];
+        BVHNode node = nodes[idx];
+        visited++;
+
+        float tmin;
+        if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, tmin))
+            continue;
+
+        if (node.primCount > 0) {
+            // Leaf — nothing more to push, just count the node
+        } else {
+            if (stackTop < 62) {
+                stack[stackTop++] = node.rightChild;
+                stack[stackTop++] = node.leftChild;
+            }
+        }
+    }
+    return visited;
+}
+
+// ── Heat palette ─────────────────────────────────────────────────────────────
+vec3 heatColor(float t) {
+    // black → blue → cyan → green → yellow → red
+    t = clamp(t, 0.0, 1.0);
+    vec3 col;
+    if      (t < 0.25) col = mix(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), t / 0.25);
+    else if (t < 0.50) col = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), (t-0.25)/0.25);
+    else if (t < 0.75) col = mix(vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), (t-0.50)/0.25);
+    else               col = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (t-0.75)/0.25);
+    return col;
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, u_resolution))) return;
+
+    // Generate camera ray from pixel coordinate (NDC → world space)
+    vec2 ndc = (vec2(pixel) + 0.5) / vec2(u_resolution) * 2.0 - 1.0;
+
+    vec4 rayClip  = vec4(ndc, -1.0, 1.0);
+    vec4 rayView  = u_invProj * rayClip;
+    rayView       = vec4(rayView.xy, -1.0, 0.0);
+    vec3 rd       = normalize((u_invView * rayView).xyz);
+    vec3 ro       = u_eyePos;
+
+    int visited = traverseCount(ro, rd);
+
+    // Normalise: 50 visits = full red
+    float t = float(visited) / 50.0;
+    vec3  col = heatColor(t);
+
+    // Overlay visit count as subtle text-like shade
+    if (visited == 0) col = vec3(0.04);  // background: nearly black
+
+    imageStore(u_output, pixel, vec4(col, 1.0));
+}
