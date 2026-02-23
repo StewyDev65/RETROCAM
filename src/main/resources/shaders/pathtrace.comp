@@ -1,0 +1,303 @@
+#version 430 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── Accumulation buffer (read previous sum, write new sum) ────────────────────
+layout(rgba32f, binding = 0) uniform image2D u_accumBuffer;
+
+// ── Camera uniforms ───────────────────────────────────────────────────────────
+uniform vec3  u_camPos;
+uniform vec3  u_camRight;
+uniform vec3  u_camUp;
+uniform vec3  u_camForward;
+uniform float u_focalDist;
+uniform float u_lensRadius;
+uniform float u_fovTanHalf;
+uniform int   u_apertureBlades;
+uniform ivec2 u_resolution;
+uniform int   u_frameIndex;   // 0 = first sample, clears accumulation
+
+// ── Temporal (Phase 7 will wire these; Phase 3 uses defaults) ─────────────────
+uniform float u_agcGain;
+uniform float u_time;
+uniform float u_tapeAge;
+
+// ── GPU Scene Data ────────────────────────────────────────────────────────────
+
+struct Triangle {
+    vec3 v0; float pad0;
+    vec3 v1; float pad1;
+    vec3 v2; float pad2;
+    vec3 n0; float pad3;
+    vec3 n1; float pad4;
+    vec3 n2; float pad5;
+    vec2 uv0; vec2 uv1;
+    vec2 uv2; int matIndex; float pad6;
+};
+
+struct BVHNode {
+    vec3 aabbMin; float pad0;
+    vec3 aabbMax; float pad1;
+    int leftChild; int rightChild; int primStart; int primCount;
+};
+
+struct Material {
+    vec3  albedo;          float metallic;
+    vec3  emission;        float emissionStrength;
+    float roughness;       float ior; float transmission; int albedoTex;
+    float p0; float p1; float p2; float p3;  // padding
+};
+
+layout(std430, binding = 0) readonly buffer TriBuffer  { Triangle  triangles[]; };
+layout(std430, binding = 1) readonly buffer BVHBuffer  { BVHNode   nodes[];     };
+layout(std430, binding = 2) readonly buffer MatBuffer  { Material  materials[]; };
+
+// ── PCG hash RNG ──────────────────────────────────────────────────────────────
+// State is advanced per-call so each rand() call gives a unique value.
+
+uint pcg(inout uint state) {
+    state = state * 747796405u + 2891336453u;
+    uint w = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+float rand(inout uint state) {
+    return float(pcg(state)) / 4294967296.0;
+}
+
+vec2 rand2(inout uint state) { return vec2(rand(state), rand(state)); }
+
+uint initSeed(ivec2 pixel, int frame) {
+    // Scramble pixel and frame together with a good hash
+    uint s = uint(pixel.x + pixel.y * 7919 + frame * 6271);
+    pcg(s); pcg(s);  // warm up
+    return s;
+}
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
+
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, out float tmin) {
+    vec3 t0 = (bmin - ro) * invRd;
+    vec3 t1 = (bmax - ro) * invRd;
+    vec3 lo = min(t0, t1);
+    vec3 hi = max(t0, t1);
+    tmin = max(max(lo.x, lo.y), lo.z);
+    float tmax = min(min(hi.x, hi.y), hi.z);
+    return tmax >= max(tmin, 0.0);
+}
+
+bool intersectTriangle(vec3 ro, vec3 rd, int idx, out float t, out vec2 bary) {
+    Triangle tri = triangles[idx];
+    vec3 e1 = tri.v1 - tri.v0;
+    vec3 e2 = tri.v2 - tri.v0;
+    vec3 h  = cross(rd, e2);
+    float a = dot(e1, h);
+    if (abs(a) < 1e-8) return false;
+    float  f = 1.0 / a;
+    vec3   s = ro - tri.v0;
+    float  u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3   q = cross(s, e1);
+    float  v = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = f * dot(e2, q);
+    if (t < 1e-4) return false;
+    bary = vec2(u, v);
+    return true;
+}
+
+// ── BVH traversal — returns closest hit ───────────────────────────────────────
+struct HitRecord {
+    bool  valid;
+    float t;
+    vec3  pos;
+    vec3  normal;
+    int   matIndex;
+};
+
+HitRecord traverseBVH(vec3 ro, vec3 rd) {
+    HitRecord rec;
+    rec.valid = false;
+    rec.t = 1e30;
+
+    vec3 invRd = 1.0 / rd;
+
+    int stack[32];
+    int top = 0;
+    stack[top++] = 0;
+
+    while (top > 0) {
+        int    idx  = stack[--top];
+        BVHNode node = nodes[idx];
+
+        float aabbT;
+        if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, aabbT))
+            continue;
+        if (aabbT > rec.t) continue;   // already have a closer hit
+
+        if (node.primCount > 0) {
+            // Leaf — test all triangles in this leaf
+            for (int i = node.primStart; i < node.primStart + node.primCount; i++) {
+                float t; vec2 bary;
+                if (intersectTriangle(ro, rd, i, t, bary) && t < rec.t) {
+                    rec.t    = t;
+                    rec.pos  = ro + rd * t;
+
+                    // Interpolate normal: bary = (u,v), w = 1-u-v
+                    Triangle tri = triangles[i];
+                    float w = 1.0 - bary.x - bary.y;
+                    rec.normal = normalize(tri.n0 * w + tri.n1 * bary.x + tri.n2 * bary.y);
+
+                    rec.matIndex = tri.matIndex;
+                    rec.valid    = true;
+                }
+            }
+        } else {
+            if (top < 30) {
+                stack[top++] = node.rightChild;
+                stack[top++] = node.leftChild;
+            }
+        }
+    }
+    return rec;
+}
+
+// ── Sampling helpers ──────────────────────────────────────────────────────────
+
+// Cosine-weighted hemisphere sample (returns world-space direction).
+// For Lambertian: throughput *= albedo (the cosine and π cancel with the PDF).
+vec3 sampleCosineHemisphere(vec2 u, vec3 n) {
+    float r   = sqrt(u.x);
+    float phi = 6.28318530718 * u.y;
+    // Local tangent-space direction
+    vec3 local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u.x)));
+
+    // Build ONB aligned with n
+    vec3 up = abs(n.y) < 0.9999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t  = normalize(cross(up, n));
+    vec3 b  = cross(n, t);
+
+    return normalize(mat3(t, b, n) * local);
+}
+
+// Sample a point on a regular N-gon (triangle fan method).
+vec2 sampleNGon(inout uint seed, float radius, int N) {
+    float r1 = rand(seed), r2 = rand(seed);
+    if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+
+    int   sector = int(rand(seed) * float(N));
+    float a0 = 6.28318530718 * float(sector)     / float(N);
+    float a1 = 6.28318530718 * float(sector + 1) / float(N);
+
+    vec2 v0 = vec2(cos(a0), sin(a0));
+    vec2 v1 = vec2(cos(a1), sin(a1));
+    return (r1 * v0 + r2 * v1) * radius;
+}
+
+// ── Thin-lens ray generation ──────────────────────────────────────────────────
+
+struct Ray { vec3 origin; vec3 dir; };
+
+Ray generateRay(ivec2 pixel, inout uint seed) {
+    float aspect = float(u_resolution.x) / float(u_resolution.y);
+
+    // Jittered pixel center (anti-aliasing sub-pixel offset)
+    vec2 jitter  = rand2(seed) - 0.5;
+    vec2 ndcUV   = (vec2(pixel) + vec2(0.5) + jitter) / vec2(u_resolution);
+    vec2 screen  = ndcUV * 2.0 - 1.0;  // [-1, 1]
+
+    // Pinhole ray direction (world space)
+    vec3 pinholeDir = normalize(
+        u_camForward
+        + u_camRight * (screen.x * aspect * u_fovTanHalf)
+        + u_camUp    * (screen.y          * u_fovTanHalf)
+    );
+
+    // Focal plane intersection (plane perpendicular to camForward at focalDist)
+    float tFocal   = u_focalDist / dot(pinholeDir, u_camForward);
+    vec3  focalPt  = u_camPos + pinholeDir * tFocal;
+
+    // Lens sample (DoF)
+    vec2 lensSample = (u_lensRadius > 0.0)
+        ? sampleNGon(seed, u_lensRadius, u_apertureBlades)
+        : vec2(0.0);
+
+    vec3 rayOrigin = u_camPos
+        + u_camRight * lensSample.x
+        + u_camUp    * lensSample.y;
+    vec3 rayDir    = normalize(focalPt - rayOrigin);
+
+    return Ray(rayOrigin, rayDir);
+}
+
+// ── Path trace ────────────────────────────────────────────────────────────────
+
+vec3 traceRadiance(Ray ray, inout uint seed) {
+    vec3 radiance   = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    vec3 ro = ray.origin;
+    vec3 rd = ray.dir;
+
+    const int MAX_BOUNCES = 6;
+
+    for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+        HitRecord hit = traverseBVH(ro, rd);
+
+        if (!hit.valid) {
+            // Ray escaped — simple sky gradient
+            float skyT  = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+            vec3  sky   = mix(vec3(0.05, 0.05, 0.08), vec3(0.1, 0.15, 0.25), skyT);
+            radiance   += throughput * sky * 0.0; // black sky for enclosed Cornell box
+            break;
+        }
+
+        Material mat = materials[hit.matIndex];
+
+        // Two-sided shading: flip normal to face the incoming ray
+        vec3 n = dot(rd, hit.normal) < 0.0 ? hit.normal : -hit.normal;
+
+        // Emission contribution
+        radiance += throughput * mat.emission * mat.emissionStrength;
+
+        // Russian roulette path termination (after bounce 3)
+        if (bounce >= 3) {
+            float survive = max(mat.albedo.r, max(mat.albedo.g, mat.albedo.b));
+            survive = clamp(survive, 0.01, 0.95);
+            if (rand(seed) > survive) break;
+            throughput /= survive;
+        }
+
+        // Lambertian diffuse bounce
+        // BRDF = albedo/π, PDF = cosθ/π → weight = albedo (cosine/π cancel)
+        rd          = sampleCosineHemisphere(rand2(seed), n);
+        throughput *= mat.albedo;
+
+        // Offset origin along shading normal to prevent self-intersection
+        ro = hit.pos + n * 1e-3;
+    }
+
+    return radiance;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, u_resolution))) return;
+
+    uint seed = initSeed(pixel, u_frameIndex);
+
+    Ray  ray      = generateRay(pixel, seed);
+    vec3 radiance = traceRadiance(ray, seed);
+
+    // Guard against NaN/Inf from degenerate geometry
+    if (any(isnan(radiance)) || any(isinf(radiance))) radiance = vec3(0.0);
+
+    if (u_frameIndex == 0) {
+        // First frame: overwrite (clears any stale data)
+        imageStore(u_accumBuffer, pixel, vec4(radiance, 1.0));
+    } else {
+        // Subsequent frames: accumulate running sum
+        vec4 prev = imageLoad(u_accumBuffer, pixel);
+        imageStore(u_accumBuffer, pixel, prev + vec4(radiance, 1.0));
+    }
+}

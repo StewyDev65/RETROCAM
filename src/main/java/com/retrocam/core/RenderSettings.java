@@ -70,4 +70,7 @@ public final class RenderSettings {
     public float vignetteStrength    = 1.4f;
     public float tapeAge             = 0.3f;    // 0=mint, 1=damaged
     public float trackingSeverity    = 0.1f;
+
+    // ── Path tracer display (Phase 3) ─────────────────────────────────────────
+    public float exposure = 1.0f;   // EV multiplier before tonemapping
 }

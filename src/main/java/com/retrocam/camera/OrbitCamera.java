@@ -23,12 +23,12 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class OrbitCamera {
 
     // ── State ─────────────────────────────────────────────────────────────────
-    private float theta   = 0.3f;        // horizontal angle (radians)
-    private float phi     = 0.4f;        // vertical angle (radians, clamped)
-    private float radius  = 12.0f;       // distance from target
+    private float theta   = (float)(Math.PI / 2.0); // face along -Z into the scene
+    private float phi     = 1.2f;                    // slightly above horizontal
+    private float radius  = 10.0f;                   // in front of open face
 
     private float targetX = 0f;
-    private float targetY = 3.0f;        // look at mid-room height
+    private float targetY = 5.0f;        // mid-room height (room is 0-10 in Y)
     private float targetZ = 0f;
 
     private float fovY    = 60.0f;       // vertical FOV in degrees
@@ -71,32 +71,33 @@ public final class OrbitCamera {
             lastMouseY = y;
 
             if (leftDown && !middleDown) {
-                // Orbit
                 theta -= (float)(dx * orbitSensitivity);
                 phi   -= (float)(dy * orbitSensitivity);
                 phi    = Math.max(0.02f, Math.min((float)Math.PI - 0.02f, phi));
+                dirty  = true;
             }
 
             if (middleDown || (leftDown && rightDown)) {
-                // Pan (move target in camera's right/up plane)
                 float[] right = cameraRight();
                 float[] up    = cameraUp();
                 float   scale = radius * panSensitivity;
                 targetX += (-right[0] * (float)dx + up[0] * (float)dy) * scale;
                 targetY += (-right[1] * (float)dx + up[1] * (float)dy) * scale;
                 targetZ += (-right[2] * (float)dx + up[2] * (float)dy) * scale;
+                dirty   = true;
             }
 
             if (rightDown && !middleDown && !leftDown) {
-                // Right-drag zoom
                 radius += (float)(dy * zoomSensitivity);
                 radius  = Math.max(0.5f, radius);
+                dirty   = true;
             }
         });
 
         glfwSetScrollCallback(window, (win, xOff, yOff) -> {
             radius -= (float)(yOff * scrollZoomStep);
             radius  = Math.max(0.5f, radius);
+            dirty   = true;
         });
     }
 
@@ -106,22 +107,24 @@ public final class OrbitCamera {
         float speed = moveSensitivity * dt;
         float[] fwd   = cameraForwardFlat();
         float[] right = cameraRight();
+        boolean moved = false;
 
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-            targetX += fwd[0] * speed; targetY += fwd[1] * speed; targetZ += fwd[2] * speed;
+            targetX += fwd[0] * speed; targetY += fwd[1] * speed; targetZ += fwd[2] * speed; moved = true;
         }
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-            targetX -= fwd[0] * speed; targetY -= fwd[1] * speed; targetZ -= fwd[2] * speed;
+            targetX -= fwd[0] * speed; targetY -= fwd[1] * speed; targetZ -= fwd[2] * speed; moved = true;
         }
         if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-            targetX -= right[0] * speed; targetZ -= right[2] * speed;
+            targetX -= right[0] * speed; targetZ -= right[2] * speed; moved = true;
         }
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-            targetX += right[0] * speed; targetZ += right[2] * speed;
+            targetX += right[0] * speed; targetZ += right[2] * speed; moved = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) targetY -= speed;
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) targetY += speed;
-        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) reset();
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) { targetY -= speed; moved = true; }
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) { targetY += speed; moved = true; }
+        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) { reset(); moved = true; }
+        if (moved) dirty = true;
 
         rebuildView();
     }
@@ -143,11 +146,34 @@ public final class OrbitCamera {
         };
     }
 
+    // ── Camera basis (world space) ────────────────────────────────────────────
+
+    /** Forward vector (from eye toward target). */
+    public float[] getCameraForward() {
+        float[] eye = getEyePosition();
+        float fx = targetX - eye[0], fy = targetY - eye[1], fz = targetZ - eye[2];
+        float len = (float) Math.sqrt(fx*fx + fy*fy + fz*fz);
+        return new float[]{ fx/len, fy/len, fz/len };
+    }
+
+    /** Right vector (perpendicular to forward and world-up). */
+    public float[] getCameraRight() { return cameraRight(); }
+
+    /** Up vector (perpendicular to forward and right). */
+    public float[] getCameraUp() { return cameraUp(); }
+
+    // ── Dirty flag (signals accumulation buffer needs reset) ──────────────────
+
+    private boolean dirty = true;
+
+    public boolean isDirty()  { return dirty; }
+    public void clearDirty()  { dirty = false; }
+
     // ── Internals ─────────────────────────────────────────────────────────────
 
     private void reset() {
-        theta = 0.3f; phi = 0.4f; radius = 12f;
-        targetX = 0f; targetY = 3f; targetZ = 0f;
+        theta = (float)(Math.PI / 2.0); phi = 1.2f; radius = 10f;
+        targetX = 0f; targetY = 5f; targetZ = 0f;
     }
 
     private void rebuildView() {

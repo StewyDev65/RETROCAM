@@ -102,6 +102,10 @@ public final class ImGuiLayer {
             boolBuf.set(s.vSync);
             if (ImGui.checkbox("VSync", boolBuf)) s.vSync = boolBuf.get();
 
+            floatBuf[0] = s.exposure;
+            if (ImGui.sliderFloat("Exposure", floatBuf, 0.1f, 8.0f))
+                s.exposure = floatBuf[0];
+
             ImGui.text(String.format("Render res : %dx%d @ %.2f fps",
                 RenderSettings.RENDER_WIDTH,
                 RenderSettings.RENDER_HEIGHT,
