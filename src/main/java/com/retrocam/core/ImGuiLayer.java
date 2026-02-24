@@ -54,6 +54,11 @@ public final class ImGuiLayer {
     private String   statusMessage       = "";
     private float    statusTimer         = 0f;
 
+    // ── Static image test mode ─────────────────────────────────────────────────
+    private final ImString testImagePath  = new ImString("test.png", 512);
+    private boolean        testModeActive = false;
+    private boolean        wantsLoadImage = false;
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     public void init(long windowHandle) {
@@ -130,6 +135,7 @@ public final class ImGuiLayer {
         renderAgcSection(s);
         renderPostToggleSection(s);
         renderPostValuesSection(s);
+        renderStaticTestSection();
 
         if (editor != null)
             renderSceneEditor(editor);
@@ -270,7 +276,6 @@ public final class ImGuiLayer {
         s.p17Enabled = postToggle("p17 Optics",         s.p17Enabled);
         s.p18Enabled = postToggle("p18 Lens Flare",     s.p18Enabled);
         s.p19Enabled = postToggle("p19 Scanlines",      s.p19Enabled);
-        s.p20Enabled = postToggle("p20 Tonemap",        s.p20Enabled);
     }
 
     // ── Post-Process Values ────────────────────────────────────────────────────
@@ -278,33 +283,91 @@ public final class ImGuiLayer {
     private void renderPostValuesSection(RenderSettings s) {
         if (!ImGui.collapsingHeader("Post-Process Values")) return;
 
+        // p01 – Downsample
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p01  Luma Bandwidth");
+        floatBuf[0] = s.lumaBlurSigma;
+        if (ImGui.sliderFloat("Luma Blur Sigma (px)##p01", floatBuf, 0f, 5f))
+            s.lumaBlurSigma = floatBuf[0];
+
+        // p02 – Chroma resolution
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p02  Chroma Resolution");
         floatBuf[0] = s.chromaResSigma;
-        if (ImGui.sliderFloat("Chroma Blur Sigma (px)", floatBuf, 1f, 20f))
+        if (ImGui.sliderFloat("Chroma Blur Sigma (px)##p02", floatBuf, 1f, 20f))
             s.chromaResSigma = floatBuf[0];
 
-        floatBuf[0] = s.timbaseAmplitudePx;
-        if (ImGui.sliderFloat("Timebase Amplitude (px)", floatBuf, 0f, 8f))
-            s.timbaseAmplitudePx = floatBuf[0];
+        // p07 – CCD noise
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p07  CCD Noise");
+        floatBuf[0] = s.ccdNoiseLumaBase;
+        if (ImGui.sliderFloat("Noise Base Amplitude##p07", floatBuf, 0f, 0.1f))
+            s.ccdNoiseLumaBase = floatBuf[0];
+        floatBuf[0] = s.ccdNoiseChromaScale;
+        if (ImGui.sliderFloat("Chroma Noise Scale##p07", floatBuf, 1f, 4f))
+            s.ccdNoiseChromaScale = floatBuf[0];
 
+        // p09 – Chroma bleed
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p09  Chroma Bleed");
+        floatBuf[0] = s.chromaBleedFactor;
+        if (ImGui.sliderFloat("Bleed Factor (k)##p09", floatBuf, 0f, 0.95f))
+            s.chromaBleedFactor = floatBuf[0];
+
+        // p10 – Timebase
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p10  Timebase Error");
+        floatBuf[0] = s.timebaseAmplitudePx;
+        if (ImGui.sliderFloat("TBE Amplitude (px)##p10", floatBuf, 0f, 8f))
+            s.timebaseAmplitudePx = floatBuf[0];
+        floatBuf[0] = s.timebaseFreq;
+        if (ImGui.sliderFloat("TBE Freq (rad/px)##p10", floatBuf, 0f, 0.15f))
+            s.timebaseFreq = floatBuf[0];
+        floatBuf[0] = s.timebaseSpeed;
+        if (ImGui.sliderFloat("TBE Speed (rad/s)##p10", floatBuf, 0f, 3f))
+            s.timebaseSpeed = floatBuf[0];
+
+        // Legacy / other pass values
+        ImGui.separator();
         floatBuf[0] = s.dropoutProbability;
-        if (ImGui.sliderFloat("Dropout Probability", floatBuf, 0f, 1f))
+        if (ImGui.sliderFloat("Dropout Probability##p12", floatBuf, 0f, 1f))
             s.dropoutProbability = floatBuf[0];
-
         floatBuf[0] = s.edgeEnhanceAmount;
-        if (ImGui.sliderFloat("Edge Enhance Amount", floatBuf, 0f, 4f))
+        if (ImGui.sliderFloat("Edge Enhance Amount##p15", floatBuf, 0f, 4f))
             s.edgeEnhanceAmount = floatBuf[0];
-
         floatBuf[0] = s.vignetteStrength;
-        if (ImGui.sliderFloat("Vignette Strength", floatBuf, 0f, 3f))
+        if (ImGui.sliderFloat("Vignette Strength##p17", floatBuf, 0f, 3f))
             s.vignetteStrength = floatBuf[0];
-
         floatBuf[0] = s.tapeAge;
-        if (ImGui.sliderFloat("Tape Age (0=mint)", floatBuf, 0f, 1f))
+        if (ImGui.sliderFloat("Tape Age (0=mint)##p12", floatBuf, 0f, 1f))
             s.tapeAge = floatBuf[0];
-
         floatBuf[0] = s.trackingSeverity;
-        if (ImGui.sliderFloat("Tracking Severity", floatBuf, 0f, 1f))
+        if (ImGui.sliderFloat("Tracking Severity##p14", floatBuf, 0f, 1f))
             s.trackingSeverity = floatBuf[0];
+    }
+
+    // ── Static image test mode ─────────────────────────────────────────────────
+
+    private void renderStaticTestSection() {
+        if (!ImGui.collapsingHeader("Post-Process Test (Static Image)")) return;
+
+        ImGui.textWrapped(
+            "Load any PNG/JPG to run the post-process stack on a static image " +
+            "without the renderer.  Great for quickly tuning individual pass values.");
+        ImGui.spacing();
+
+        ImGui.setNextItemWidth(-80);
+        ImGui.inputText("##testpath", testImagePath);
+        ImGui.sameLine();
+        if (ImGui.button("Load##testimg")) {
+            wantsLoadImage = true;
+        }
+
+        if (testModeActive) {
+            ImGui.sameLine();
+            if (ImGui.button("Stop##testmode")) {
+                testModeActive = false;
+            }
+            ImGui.textColored(0.4f, 1.0f, 0.4f, 1.0f,
+                "Test mode active — renderer paused");
+        } else {
+            ImGui.textDisabled("(No test image loaded — renderer running)");
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -602,5 +665,31 @@ public final class ImGuiLayer {
     public void setSppmStats(float searchRadius, int iteration) {
         this.sppmSearchRadius = searchRadius;
         this.sppmIteration    = iteration;
+    }
+
+    // ── Static image test mode accessors ──────────────────────────────────────
+
+    /** True when the user has engaged post-process test mode with a loaded image. */
+    public boolean isTestModeActive() { return testModeActive; }
+
+    /** Returns the file path typed in the test-mode panel. */
+    public String getTestImagePath() { return testImagePath.get(); }
+
+    /**
+     * Consumes the "load image" request flag.
+     * Returns {@code true} once after the Load button is pressed; resets to false.
+     */
+    public boolean pollWantsLoadImage() {
+        boolean v = wantsLoadImage;
+        wantsLoadImage = false;
+        return v;
+    }
+
+    /**
+     * Called by Main after successfully loading a test image to activate test mode.
+     * Also used to deactivate ({@code active = false}) when image loading fails.
+     */
+    public void setTestModeActive(boolean active) {
+        this.testModeActive = active;
     }
 }

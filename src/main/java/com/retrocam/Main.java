@@ -7,6 +7,8 @@ import com.retrocam.core.Renderer;
 import com.retrocam.core.RenderSettings;
 import com.retrocam.core.TemporalState;
 import com.retrocam.gl.ShaderProgram;
+import com.retrocam.post.PostProcessStack;
+import com.retrocam.post.StaticImageLoader;
 import com.retrocam.scene.Scene;
 import com.retrocam.scene.SceneUploader;
 import com.retrocam.scene.SPPMManager;
@@ -56,10 +58,12 @@ public final class Main {
     private SceneUploader sceneUploader;
 
     // ── Rendering ─────────────────────────────────────────────────────────────
-    private Renderer      renderer;
-    private SPPMManager   sppmManager;
-    private ShaderProgram displayShader;
-    private int           fullscreenVao;
+    private Renderer           renderer;
+    private SPPMManager        sppmManager;
+    private PostProcessStack   postStack;
+    private StaticImageLoader  staticImageLoader;
+    private ShaderProgram      displayShader;   // display.frag: ACES tonemap + gamma for screen
+    private int                fullscreenVao;
 
     // ── Settings snapshot for accumulation-reset detection ────────────────────
     // Phase 4: also track SA and LCA so optical changes trigger a clean restart.
@@ -92,7 +96,7 @@ public final class Main {
         camera.setImguiMouseGuard(() -> ImGui.getIO().getWantCaptureMouse());
         snapshotSettings();
 
-        System.out.println("[RetroCam] Phase 4 ready — optical effects (SA, LCA, AF lag, polygon bokeh)");
+        System.out.println("[RetroCam] Phase 6 ready — post-process stack (batch 1: p01, p02, p07, p09, p10, p20)");
         System.out.println("[RetroCam] GL  : " + glGetString(GL_RENDERER));
         System.out.println("[RetroCam] GLSL: " + glGetString(GL_SHADING_LANGUAGE_VERSION));
     }
@@ -157,10 +161,12 @@ public final class Main {
     }
 
     private void initGpuResources() {
-        fullscreenVao = glGenVertexArrays();
-        renderer      = new Renderer();
-        sppmManager   = new SPPMManager(settings);
-        displayShader = ShaderProgram.createRender(
+        fullscreenVao     = glGenVertexArrays();
+        renderer          = new Renderer();
+        sppmManager       = new SPPMManager(settings);
+        postStack         = new PostProcessStack(fullscreenVao);
+        staticImageLoader = new StaticImageLoader();
+        displayShader     = ShaderProgram.createRender(
             "/shaders/fullscreen.vert", "/shaders/display.frag");
     }
 
@@ -210,22 +216,58 @@ public final class Main {
             // Per-frame loop order (spec §10):
             // 1. Temporal update (already done above via temporal.update)
             // 2. SPPM photon trace
-            if (settings.sppmEnabled && sceneUploader.getLightCount() > 0) {
+            if (!imGui.isTestModeActive()
+                    && settings.sppmEnabled
+                    && sceneUploader.getLightCount() > 0) {
                 sppmManager.tracePhotons(sceneUploader, settings);
             }
-            // 3. Path trace accumulation
-            renderer.render(sceneUploader, camera, thinLens, temporal, settings);
-            // 4. SPPM gather (adds caustic radiance to accumulation buffer)
-            if (settings.sppmEnabled && sceneUploader.getLightCount() > 0) {
+            // 3. Path trace accumulation (skip when showing a static test image)
+            if (!imGui.isTestModeActive()) {
+                renderer.render(sceneUploader, camera, thinLens, temporal, settings);
+            }
+            // 4. SPPM gather
+            if (!imGui.isTestModeActive()
+                    && settings.sppmEnabled
+                    && sceneUploader.getLightCount() > 0) {
                 sppmManager.gatherRadiance(sceneUploader, camera,
                     renderer.getAccumTexture(), settings, renderer.getTotalSamples());
                 // 5. Shrink search radius
                 sppmManager.updateRadius(settings.sppmAlpha);
             }
 
-            // Display result
+            // ── Post-process stack ─────────────────────────────────────────────
+            // Handle "Load Image" requests from the test-mode panel
+            if (imGui.pollWantsLoadImage()) {
+                try {
+                    staticImageLoader.load(imGui.getTestImagePath());
+                    imGui.setTestModeActive(true);
+                    renderer.reset();           // clear stale accumulation
+                    sppmManager.reset(settings);
+                } catch (Exception ex) {
+                    System.err.println("[RetroCam] Test image load failed: " + ex.getMessage());
+                    imGui.setTestModeActive(false);
+                }
+            }
+
+            // Run post-process stack on the appropriate source
+            int finalTexId;
+            if (imGui.isTestModeActive() && staticImageLoader.isLoaded()) {
+                finalTexId = postStack.runOnImage(
+                    staticImageLoader.texId(), settings, temporal);
+            } else {
+                finalTexId = postStack.runOnAccum(
+                    renderer.getAccumTexture(), renderer.getTotalSamples(),
+                    settings.exposure, settings, temporal);
+            }
+
+            // Increment frame counter each rendered frame (for noise seeds etc.)
+            settings.frameIndex++;
+
+            // Display result — restore display viewport first, since the post-stack
+            // FBOs call glViewport(854, 480) internally and leave it at that size.
             glClear(GL_COLOR_BUFFER_BIT);
-            drawFullscreen();
+            glViewport(0, 0, settings.displayWidth, settings.displayHeight);
+            drawBlit(finalTexId);
 
             // ImGui overlay
             imGui.beginFrame();
@@ -241,14 +283,18 @@ public final class Main {
 
     // ── Display ───────────────────────────────────────────────────────────────
 
-    private void drawFullscreen() {
+    /**
+     * Tonemap and display the post-stack output using display.frag (ACES + gamma).
+     * p00_normalize already divided by sample count and applied exposure, so we
+     * pass totalSamples=1 and exposure=1.0 to avoid double-dividing.
+     */
+    private void drawBlit(int texId) {
         displayShader.bind();
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, renderer.getAccumTexture());
+        glBindTexture(GL_TEXTURE_2D, texId);
         displayShader.setInt("u_tex",          0);
-        displayShader.setInt("u_totalSamples", renderer.getTotalSamples());
-        displayShader.setFloat("u_exposure",   settings.exposure);
-
+        displayShader.setInt("u_totalSamples", 1);    // already normalised by p00
+        displayShader.setFloat("u_exposure",   1.0f); // already applied by p00
         glBindVertexArray(fullscreenVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
@@ -307,6 +353,8 @@ public final class Main {
         imGui.destroy();
         renderer.destroy();
         sppmManager.destroy();
+        postStack.destroy();
+        staticImageLoader.destroy();
         displayShader.destroy();
         glDeleteVertexArrays(fullscreenVao);
         sceneUploader.destroy();

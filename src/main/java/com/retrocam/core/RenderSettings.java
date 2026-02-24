@@ -42,30 +42,31 @@ public final class RenderSettings {
     public float wbSpeed      = 0.33f;      // white balance drift speed (1/s)
 
     // ── Post-process master toggles (Phase 6) ────────────────────────────────
-    public boolean p01Enabled = true;   // downsample
-    public boolean p02Enabled = true;   // chroma resolution
-    public boolean p03Enabled = true;   // color matrix
-    public boolean p04Enabled = true;   // dynamic range
-    public boolean p05Enabled = true;   // AGC
-    public boolean p06Enabled = true;   // halation
-    public boolean p07Enabled = true;   // CCD noise
-    public boolean p08Enabled = true;   // CCD smear
-    public boolean p09Enabled = true;   // chroma bleed
-    public boolean p10Enabled = true;   // timebase
-    public boolean p11Enabled = true;   // dot crawl
-    public boolean p12Enabled = true;   // dropout
-    public boolean p13Enabled = true;   // head switch
-    public boolean p14Enabled = true;   // tracking
-    public boolean p15Enabled = true;   // edge enhance
-    public boolean p16Enabled = true;   // interlace
-    public boolean p17Enabled = true;   // optics
-    public boolean p18Enabled = true;   // lens flare
-    public boolean p19Enabled = true;   // scanlines
-    public boolean p20Enabled = true;   // tonemap
+    // All off by default — enable individually to test each effect.
+    // p20 (tonemap) stays on so the display is always correct.
+    public boolean p01Enabled = false;  // downsample
+    public boolean p02Enabled = false;  // chroma resolution
+    public boolean p03Enabled = false;  // color matrix
+    public boolean p04Enabled = false;  // dynamic range
+    public boolean p05Enabled = false;  // AGC
+    public boolean p06Enabled = false;  // halation
+    public boolean p07Enabled = false;  // CCD noise
+    public boolean p08Enabled = false;  // CCD smear
+    public boolean p09Enabled = false;  // chroma bleed
+    public boolean p10Enabled = false;  // timebase
+    public boolean p11Enabled = false;  // dot crawl
+    public boolean p12Enabled = false;  // dropout
+    public boolean p13Enabled = false;  // head switch
+    public boolean p14Enabled = false;  // tracking
+    public boolean p15Enabled = false;  // edge enhance
+    public boolean p16Enabled = false;  // interlace
+    public boolean p17Enabled = false;  // optics
+    public boolean p18Enabled = false;  // lens flare
+    public boolean p19Enabled = false;  // scanlines
 
     // ── Post-process key values (Phase 6) ─────────────────────────────────────
     public float chromaResSigma      = 7.0f;
-    public float timbaseAmplitudePx  = 1.5f;
+    public float timebaseAmplitudePx = 1.5f;
     public float dropoutProbability  = 0.15f;
     public float edgeEnhanceAmount   = 1.5f;
     public float vignetteStrength    = 1.4f;
@@ -74,4 +75,30 @@ public final class RenderSettings {
 
     // ── Path tracer display (Phase 3) ─────────────────────────────────────────
     public float exposure = 1.0f;   // EV multiplier before tonemapping
+
+    // ── Phase 6: frame counter (incremented by Main each render frame) ─────────
+    // Used by noise/jitter shaders to produce frame-varying randomness.
+    public int frameIndex = 0;
+
+    // ── Phase 6: p01 Downsample ───────────────────────────────────────────────
+    // Horizontal Gaussian sigma (px) for VHS luma bandwidth limit.
+    // At 854 px wide, sigma=1.5 yields ~240 effective horizontal TV lines.
+    public float lumaBlurSigma = 1.5f;
+
+    // ── Phase 6: p07 CCD Noise ────────────────────────────────────────────────
+    // lumaNoiseBase: floor amplitude for bright pixels.
+    // chromaNoiseScale: chroma noise amplitude as a multiplier of luma amplitude.
+    public float ccdNoiseLumaBase    = 0.015f;
+    public float ccdNoiseChromaScale = 1.6f;
+
+    // ── Phase 6: p09 Chroma Bleed ─────────────────────────────────────────────
+    // IIR decay factor per pixel (k).  Higher = longer smear tail.
+    // 0.35 ≈ real composite demodulator settling time at VHS resolution.
+    public float chromaBleedFactor = 0.35f;
+
+    // ── Phase 6: p10 Timebase ─────────────────────────────────────────────────
+    // Spatial frequency (rad/px) and temporal rate (rad/s) of the sinusoidal
+    // wobble component.  Noise component uses the same amplitude.
+    public float timebaseFreq  = 0.02f;
+    public float timebaseSpeed = 0.70f;
 }
