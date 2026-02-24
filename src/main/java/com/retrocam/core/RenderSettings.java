@@ -65,8 +65,8 @@ public final class RenderSettings {
     public boolean p19Enabled = false;  // scanlines
 
     // ── Post-process key values (Phase 6) ─────────────────────────────────────
-    public float chromaResSigma      = 7.0f;
-    public float timebaseAmplitudePx = 1.5f;
+    public float chromaResSigma      = 15.0f;
+    public float timebaseAmplitudePx = 0.45f;
     public float dropoutProbability  = 0.15f;
     public float edgeEnhanceAmount   = 1.5f;
     public float vignetteStrength    = 1.4f;
@@ -83,18 +83,18 @@ public final class RenderSettings {
     // ── Phase 6: p01 Downsample ───────────────────────────────────────────────
     // Horizontal Gaussian sigma (px) for VHS luma bandwidth limit.
     // At 854 px wide, sigma=1.5 yields ~240 effective horizontal TV lines.
-    public float lumaBlurSigma = 1.5f;
+    public float lumaBlurSigma = 0.333f;
 
     // ── Phase 6: p07 CCD Noise ────────────────────────────────────────────────
     // lumaNoiseBase: floor amplitude for bright pixels.
     // chromaNoiseScale: chroma noise amplitude as a multiplier of luma amplitude.
-    public float ccdNoiseLumaBase    = 0.015f;
-    public float ccdNoiseChromaScale = 1.6f;
+    public float ccdNoiseLumaBase    = 0.001f;
+    public float ccdNoiseChromaScale = 1.05f;
 
     // ── Phase 6: p09 Chroma Bleed ─────────────────────────────────────────────
     // IIR decay factor per pixel (k).  Higher = longer smear tail.
     // 0.35 ≈ real composite demodulator settling time at VHS resolution.
-    public float chromaBleedFactor = 0.35f;
+    public float chromaBleedFactor = 0.75f;
 
     // ── Phase 6: p10 Timebase ─────────────────────────────────────────────────
     // Spatial frequency (rad/px) and temporal rate (rad/s) of the sinusoidal
