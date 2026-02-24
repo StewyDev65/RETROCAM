@@ -64,6 +64,8 @@ public final class Main {
     private StaticImageLoader  staticImageLoader;
     private ShaderProgram      displayShader;   // display.frag: ACES tonemap + gamma for screen
     private int                fullscreenVao;
+    private com.retrocam.export.RenderPipeline renderPipeline;
+    private com.retrocam.export.RenderContext  renderContext;
 
     // ── Settings snapshot for accumulation-reset detection ────────────────────
     // Phase 4: also track SA and LCA so optical changes trigger a clean restart.
@@ -168,11 +170,17 @@ public final class Main {
         staticImageLoader = new StaticImageLoader();
         displayShader     = ShaderProgram.createRender(
             "/shaders/fullscreen.vert", "/shaders/display.frag");
+        renderPipeline = new com.retrocam.export.RenderPipeline();
     }
 
     private void initImGui() {
         imGui = new ImGuiLayer();
         imGui.init(window);
+        // Build once so pipeline has all dependencies wired before any tick
+        renderContext = new com.retrocam.export.RenderContext(
+            renderer, sppmManager, postStack, sceneUploader,
+            camera, thinLens, temporal, settings);
+        imGui.setRenderPipeline(renderPipeline);
     }
 
     // ── Loop ──────────────────────────────────────────────────────────────────
@@ -213,51 +221,62 @@ public final class Main {
                 snapshotSettings();
             }
 
-            // Per-frame loop order (spec §10):
-            // 1. Temporal update (already done above via temporal.update)
-            // 2. SPPM photon trace
-            if (!imGui.isTestModeActive()
-                    && settings.sppmEnabled
-                    && sceneUploader.getLightCount() > 0) {
-                sppmManager.tracePhotons(sceneUploader, settings);
-            }
-            // 3. Path trace accumulation (skip when showing a static test image)
-            if (!imGui.isTestModeActive()) {
-                renderer.render(sceneUploader, camera, thinLens, temporal, settings);
-            }
-            // 4. SPPM gather
-            if (!imGui.isTestModeActive()
-                    && settings.sppmEnabled
-                    && sceneUploader.getLightCount() > 0) {
-                sppmManager.gatherRadiance(sceneUploader, camera,
-                    renderer.getAccumTexture(), settings, renderer.getTotalSamples());
-                // 5. Shrink search radius
-                sppmManager.updateRadius(settings.sppmAlpha);
-            }
-
-            // ── Post-process stack ─────────────────────────────────────────────
-            // Handle "Load Image" requests from the test-mode panel
-            if (imGui.pollWantsLoadImage()) {
-                try {
-                    staticImageLoader.load(imGui.getTestImagePath());
-                    imGui.setTestModeActive(true);
-                    renderer.reset();           // clear stale accumulation
-                    sppmManager.reset(settings);
-                } catch (Exception ex) {
-                    System.err.println("[RetroCam] Test image load failed: " + ex.getMessage());
-                    imGui.setTestModeActive(false);
-                }
-            }
-
-            // Run post-process stack on the appropriate source
+            // ── Render pipeline / interactive loop ────────────────────────────────────
             int finalTexId;
-            if (imGui.isTestModeActive() && staticImageLoader.isLoaded()) {
-                finalTexId = postStack.runOnImage(
-                    staticImageLoader.texId(), settings, temporal);
-            } else {
-                finalTexId = postStack.runOnAccum(
+
+            if (renderPipeline.isRunning()) {
+                // Offline render pipeline owns all GPU work this tick.
+                // Tick does one complete frame (all spp + post) and returns its output.
+                finalTexId = renderPipeline.tick(renderContext, dt);
+                if (finalTexId < 0) finalTexId = postStack.runOnAccum(
                     renderer.getAccumTexture(), renderer.getGBufferTexture(),
                     renderer.getTotalSamples(), settings.exposure, settings, temporal);
+
+                // Update window title with pipeline progress
+                glfwSetWindowTitle(window, String.format("%s  |  Rendering frame %d/%d  |  %.0f%%",
+                    WINDOW_TITLE,
+                    renderPipeline.getCurrentFrame(), renderPipeline.getTotalFrames(),
+                    renderPipeline.getProgress() * 100f));
+
+            } else {
+                // Normal interactive loop
+                if (!imGui.isTestModeActive()
+                        && settings.sppmEnabled
+                        && sceneUploader.getLightCount() > 0) {
+                    sppmManager.tracePhotons(sceneUploader, settings);
+                }
+                if (!imGui.isTestModeActive()) {
+                    renderer.render(sceneUploader, camera, thinLens, temporal, settings);
+                }
+                if (!imGui.isTestModeActive()
+                        && settings.sppmEnabled
+                        && sceneUploader.getLightCount() > 0) {
+                    sppmManager.gatherRadiance(sceneUploader, camera,
+                        renderer.getAccumTexture(), settings, renderer.getTotalSamples());
+                    sppmManager.updateRadius(settings.sppmAlpha);
+                }
+
+                // Post-process stack (test image or accumulation)
+                if (imGui.pollWantsLoadImage()) {
+                    try {
+                        staticImageLoader.load(imGui.getTestImagePath());
+                        imGui.setTestModeActive(true);
+                        renderer.reset();
+                        sppmManager.reset(settings);
+                    } catch (Exception ex) {
+                        System.err.println("[RetroCam] Test image load failed: " + ex.getMessage());
+                        imGui.setTestModeActive(false);
+                    }
+                }
+
+                if (imGui.isTestModeActive() && staticImageLoader.isLoaded()) {
+                    finalTexId = postStack.runOnImage(
+                        staticImageLoader.texId(), settings, temporal);
+                } else {
+                    finalTexId = postStack.runOnAccum(
+                        renderer.getAccumTexture(), renderer.getGBufferTexture(),
+                        renderer.getTotalSamples(), settings.exposure, settings, temporal);
+                }
             }
 
             // Increment frame counter each rendered frame (for noise seeds etc.)
@@ -363,6 +382,8 @@ public final class Main {
         glfwDestroyWindow(window);
         glfwTerminate();
         glfwSetErrorCallback(null).free();
+
+        renderPipeline.cancel();
 
         System.out.println("[RetroCam] Shutdown clean.");
     }

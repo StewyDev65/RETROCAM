@@ -68,6 +68,48 @@ public final class TemporalState {
     public void setAgcGainTarget(float target)   { this.agcGainTarget   = target; }
     public void setFocalDistTarget(float target) { this.focalDistTarget = target; }
 
+    // ── Video-mode temporal control ──────────────────────────────────────────
+
+    /**
+     * Resets all IIR state to defaults for the start of an offline video render.
+     * Called once by {@link com.retrocam.export.RenderPipeline} before frame 0.
+     */
+    public void resetForVideoRendering(RenderSettings settings) {
+        agcGain          = 1.0f;
+        focalDist        = settings.focusDistM;
+        time             = 0.0f;
+        agcGainTarget    = 1.0f;
+        focalDistTarget  = settings.focusDistM;
+        whiteBalance     = new float[]{ 1,0,0, 0,1,0, 0,0,1 };
+    }
+
+    /**
+     * Advances IIR filters by one canonical frame period but overrides
+     * {@link #time} with the exact frame time rather than accumulating it.
+     * This ensures noise seeds and drift effects are perfectly reproducible
+     * regardless of how long each frame takes to render on the GPU.
+     *
+     * @param canonicalTime exact time in seconds for this frame (frameIndex / fps)
+     * @param frameDt       frame period in seconds (1 / fps)
+     * @param settings      current render settings
+     */
+    public void updateForVideoFrame(float canonicalTime, float frameDt, RenderSettings settings) {
+        time = canonicalTime;   // set exactly, do not accumulate
+
+        float agcAlpha = 1.0f - (float) Math.exp(-settings.agcSpeed * frameDt);
+        agcGain += (agcGainTarget - agcGain) * agcAlpha;
+        agcGain  = Math.max(1.0f, Math.min(settings.agcMaxGain, agcGain));
+
+        float afAlpha = 1.0f - (float) Math.exp(-settings.afSpeed * frameDt);
+        focalDist += (focalDistTarget - focalDist) * afAlpha;
+
+        float hunt = (float)(
+            Math.sin(time * 7.31)  * 0.006
+        + Math.sin(time * 13.77) * 0.004
+        ) * afAlpha;
+        focalDist = Math.max(0.1f, focalDist + hunt);
+    }
+
     // ── Uniform upload ────────────────────────────────────────────────────────
 
     /**

@@ -59,6 +59,12 @@ public final class ImGuiLayer {
     private boolean        testModeActive = false;
     private boolean        wantsLoadImage = false;
 
+    // ── Render export state ────────────────────────────────────────────────────
+    private com.retrocam.export.RenderPipeline renderPipeline;
+    private final ImString exportOutputPath = new ImString("output", 512);
+    private static final String[] RENDER_FORMAT_LABELS =
+        com.retrocam.export.RenderFormat.labels();
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     public void init(long windowHandle) {
@@ -67,6 +73,10 @@ public final class ImGuiLayer {
         io.addConfigFlags(ImGuiConfigFlags.NavEnableKeyboard);
         imGuiGlfw.init(windowHandle, true);
         imGuiGl3.init("#version 430");
+    }
+
+    public void setRenderPipeline(com.retrocam.export.RenderPipeline pipeline) {
+        this.renderPipeline = pipeline;
     }
 
     public void destroy() {
@@ -138,6 +148,9 @@ public final class ImGuiLayer {
         renderPostValuesSection(s);
         renderStaticTestSection();
 
+        if (renderPipeline != null)
+            renderExportSection(s);
+
         if (editor != null)
             renderSceneEditor(editor);
 
@@ -202,6 +215,127 @@ public final class ImGuiLayer {
         floatBuf[0] = s.lcaDelta[2];
         if (ImGui.sliderFloat("LCA Blue", floatBuf, -0.02f, 0.02f))
             s.lcaDelta[2] = floatBuf[0];
+    }
+
+    // ── Render Export ──────────────────────────────────────────────────────────
+
+    private void renderExportSection(RenderSettings s) {
+        if (!ImGui.collapsingHeader("Render Export")) return;
+
+        // ── Output path ──────────────────────────────────────────────────
+        ImGui.textDisabled("Output path (no extension)");
+        ImGui.setNextItemWidth(-1);
+        if (ImGui.inputText("##exportPath", exportOutputPath))
+            s.exportOutputPath = exportOutputPath.get();
+
+        // ── Format ───────────────────────────────────────────────────────
+        ImGui.setNextItemWidth(-1);
+        imIntBuf.set(s.exportFormatIndex);
+        if (ImGui.combo("Format##exportFmt", imIntBuf, RENDER_FORMAT_LABELS))
+            s.exportFormatIndex = imIntBuf.get();
+
+        com.retrocam.export.RenderFormat fmt =
+            com.retrocam.export.RenderFormat.values()[s.exportFormatIndex];
+
+        // ── Quality ───────────────────────────────────────────────────────
+        intBuf[0] = s.exportSamplesPerFrame;
+        if (ImGui.sliderInt("Samples / frame##exportSpp", intBuf, 1, 2048))
+            s.exportSamplesPerFrame = intBuf[0];
+
+        if (fmt == com.retrocam.export.RenderFormat.PHOTO_JPEG) {
+            intBuf[0] = s.exportJpegQuality;
+            if (ImGui.sliderInt("JPEG Quality##exportJpeg", intBuf, 1, 100))
+                s.exportJpegQuality = intBuf[0];
+        }
+
+        // ── Video settings ────────────────────────────────────────────────
+        if (fmt.isVideo) {
+            ImGui.separator();
+            ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "Video Settings");
+
+            floatBuf[0] = s.exportDurationSec;
+            if (ImGui.sliderFloat("Duration (s)##exportDur", floatBuf, 0.5f, 300f))
+                s.exportDurationSec = floatBuf[0];
+
+            floatBuf[0] = s.exportFps;
+            if (ImGui.sliderFloat("FPS##exportFps", floatBuf, 1f, 120f))
+                s.exportFps = floatBuf[0];
+
+            int frames = Math.max(1, Math.round(s.exportDurationSec * s.exportFps));
+            ImGui.textDisabled(String.format("  → %d frames  |  ~%.1f min at current spp",
+                frames, estimateRenderMinutes(frames, s.exportSamplesPerFrame)));
+
+            if (fmt.requiresFFmpeg) {
+                boolean hasFfmpeg = com.retrocam.export.VideoExporter.isFFmpegAvailable();
+                if (hasFfmpeg)
+                    ImGui.textColored(0.4f, 1f, 0.4f, 1f, "  FFmpeg found \u2713");
+                else
+                    ImGui.textColored(1f, 0.5f, 0.3f, 1f,
+                        "  FFmpeg not found — will save image sequence");
+            }
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+
+        // ── Pipeline status / controls ────────────────────────────────────
+        com.retrocam.export.RenderPipeline.State pState = renderPipeline.getState();
+
+        if (renderPipeline.isRunning()) {
+            // Progress bar
+            float progress = renderPipeline.getProgress();
+            String overlay = fmt.isVideo
+                ? String.format("Frame %d / %d", renderPipeline.getCurrentFrame(),
+                                renderPipeline.getTotalFrames())
+                : "Rendering…";
+            ImGui.progressBar(progress, -1, 0, overlay);
+            ImGui.textDisabled(renderPipeline.getStatusMessage());
+
+            if (ImGui.button("Cancel##exportCancel"))
+                renderPipeline.cancel();
+
+        } else if (pState == com.retrocam.export.RenderPipeline.State.COMPLETE) {
+            ImGui.textColored(0.4f, 1f, 0.4f, 1f, "\u2713 " + renderPipeline.getStatusMessage());
+            if (ImGui.button("New Render##exportNew"))  renderPipeline.reset();
+            ImGui.sameLine();
+            if (ImGui.button("Render Again##exportAgain")) startRenderJob(s);
+
+        } else if (pState == com.retrocam.export.RenderPipeline.State.ERROR
+                || pState == com.retrocam.export.RenderPipeline.State.CANCELLED) {
+            ImGui.textColored(1f, 0.4f, 0.4f, 1f, renderPipeline.getStatusMessage());
+            if (ImGui.button("Dismiss##exportDismiss")) renderPipeline.reset();
+            ImGui.sameLine();
+            if (ImGui.button("Retry##exportRetry")) startRenderJob(s);
+
+        } else {
+            // IDLE — show start button
+            if (ImGui.button("Start Render##exportStart"))
+                startRenderJob(s);
+        }
+    }
+
+    private void startRenderJob(RenderSettings s) {
+        try {
+            exportOutputPath.set(s.exportOutputPath);
+            com.retrocam.export.RenderFormat fmt =
+                com.retrocam.export.RenderFormat.values()[s.exportFormatIndex];
+            com.retrocam.export.RenderJob job = com.retrocam.export.RenderJob.builder()
+                .outputPath(s.exportOutputPath)
+                .format(fmt)
+                .samplesPerFrame(s.exportSamplesPerFrame)
+                .jpegQuality(s.exportJpegQuality)
+                .durationSeconds(s.exportDurationSec)
+                .fps(s.exportFps)
+                .build();
+            renderPipeline.startJob(job);
+        } catch (Exception e) {
+            showStatus("Render error: " + e.getMessage());
+        }
+    }
+
+    /** Very rough estimate: assumes ~0.5s per sample per frame on a mid-range GPU. */
+    private float estimateRenderMinutes(int totalFrames, int spp) {
+        return (totalFrames * spp * 0.5f) / 60f;
     }
 
     // ── SPPM ───────────────────────────────────────────────────────────────────

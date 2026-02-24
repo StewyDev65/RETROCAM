@@ -187,4 +187,13 @@ public final class RenderSettings {
     public float interlaceCombStrength   = 1.5f;
     public float interlaceCombEdgeThresh = 0.04f;
     public float interlaceLineWeighting  = 0.05f;
+
+    // ── Render Export (Phase file-render) ────────────────────────────────────────
+    public String exportOutputPath     = "output";
+    public int    exportFormatIndex    = 0;         // index into RenderFormat.values()
+    public int    exportSamplesPerFrame = 128;
+    public int    exportJpegQuality    = 90;
+    // Video-only
+    public float  exportDurationSec    = 5.0f;
+    public float  exportFps            = 29.97f;
 }
