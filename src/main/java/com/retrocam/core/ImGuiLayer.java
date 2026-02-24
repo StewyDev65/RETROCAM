@@ -394,7 +394,42 @@ public final class ImGuiLayer {
         if (ImGui.sliderFloat("Burst Frequency##p12", floatBuf, 0.01f, 1.0f))
             s.dropoutBurstRate = floatBuf[0];
 
-        // Unimplemented pass placeholders (settings shown for future passes)
+        ImGui.separator();
+
+        // p13 – Head-Switch Noise
+        boolBuf.set(s.p13Enabled);
+        if (ImGui.checkbox("##p13en", boolBuf)) s.p13Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p13  Head-Switch Noise");
+        intBuf[0] = s.headSwitchLines;
+        if (ImGui.sliderInt("Switch Zone (lines)##p13", intBuf, 4, 24))
+            s.headSwitchLines = intBuf[0];
+        floatBuf[0] = s.headSwitchJitter;
+        if (ImGui.sliderFloat("Jitter Scale##p13", floatBuf, 1f, 8f))
+            s.headSwitchJitter = floatBuf[0];
+        floatBuf[0] = s.headSwitchRipple;
+        if (ImGui.sliderFloat("Luma Ripple##p13", floatBuf, 0f, 0.35f))
+            s.headSwitchRipple = floatBuf[0];
+        floatBuf[0] = s.headSwitchChroma;
+        if (ImGui.sliderFloat("Chroma Rotation (rad)##p13", floatBuf, 0f, 1.2f))
+            s.headSwitchChroma = floatBuf[0];
+
+        // p14 – Tracking Error
+        boolBuf.set(s.p14Enabled);
+        if (ImGui.checkbox("##p14en", boolBuf)) s.p14Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p14  Tracking Error");
+        floatBuf[0] = s.trackingSeverity;
+        if (ImGui.sliderFloat("Severity##p14", floatBuf, 0f, 1f))
+            s.trackingSeverity = floatBuf[0];
+        floatBuf[0] = s.trackingMaxDisplacePx;
+        if (ImGui.sliderFloat("Max Displacement (px)##p14", floatBuf, 4f, 80f))
+            s.trackingMaxDisplacePx = floatBuf[0];
+        floatBuf[0] = s.trackingFringeWidthPx;
+        if (ImGui.sliderFloat("Fringe Width (px)##p14", floatBuf, 1f, 12f))
+            s.trackingFringeWidthPx = floatBuf[0];
+
+        // Unimplemented pass placeholders
         ImGui.separator();
         floatBuf[0] = s.edgeEnhanceAmount;
         if (ImGui.sliderFloat("Edge Enhance Amount##p15", floatBuf, 0f, 4f))
@@ -402,9 +437,6 @@ public final class ImGuiLayer {
         floatBuf[0] = s.vignetteStrength;
         if (ImGui.sliderFloat("Vignette Strength##p17", floatBuf, 0f, 3f))
             s.vignetteStrength = floatBuf[0];
-        floatBuf[0] = s.trackingSeverity;
-        if (ImGui.sliderFloat("Tracking Severity##p14", floatBuf, 0f, 1f))
-            s.trackingSeverity = floatBuf[0];
     }
 
     // ── Static image test mode ─────────────────────────────────────────────────

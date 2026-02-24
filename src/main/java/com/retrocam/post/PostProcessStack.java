@@ -56,6 +56,8 @@ public final class PostProcessStack {
     private final PostProcessPass p10Timebase;    // per-scanline horizontal jitter
     private final PostProcessPass p11DotCrawl;    // NTSC dot crawl at luma edges
     private final PostProcessPass p12Dropout;     // magnetic tape dropout streaks
+    private final PostProcessPass p13HeadSwitch;
+    private final PostProcessPass p14Tracking;
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -77,8 +79,10 @@ public final class PostProcessStack {
         p08CcdSmear    = new PostProcessPass("p08_ccd_smear",    "/shaders/post/p08_ccd_smear.frag");
         p09ChromaBleed = new PostProcessPass("p09_chroma_bleed", "/shaders/post/p09_chroma_bleed.frag");
         p10Timebase    = new PostProcessPass("p10_timebase",     "/shaders/post/p10_timebase.frag");
-        p11DotCrawl  = new PostProcessPass("p11_dot_crawl",      "/shaders/post/p11_dot_crawl.frag");
-        p12Dropout   = new PostProcessPass("p12_dropout",        "/shaders/post/p12_dropout.frag");
+        p11DotCrawl    = new PostProcessPass("p11_dot_crawl",    "/shaders/post/p11_dot_crawl.frag");
+        p12Dropout     = new PostProcessPass("p12_dropout",      "/shaders/post/p12_dropout.frag");
+        p13HeadSwitch  = new PostProcessPass("p13_headswitch",   "/shaders/post/p13_headswitch.frag");
+        p14Tracking    = new PostProcessPass("p14_tracking",     "/shaders/post/p14_tracking.frag");
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -223,7 +227,28 @@ public final class PostProcessStack {
             });
         }
 
-        // p13 – p19: not yet implemented – pass through
+        // p13 – Head-switch shimmy at bottom scanlines
+        if (s.p13Enabled) {
+            current = swap(p13HeadSwitch, current, sh -> {
+                sh.setInt  ("u_switchLines",  s.headSwitchLines);
+                sh.setFloat("u_jitterScale",  s.headSwitchJitter);
+                sh.setFloat("u_lumaRipple",   s.headSwitchRipple);
+                sh.setFloat("u_chromaRotAmp", s.headSwitchChroma);
+                sh.setInt  ("u_frameIndex",   s.frameIndex);
+            });
+        }
+
+        // p14 – Tracking error bands (horizontal displacement + guard-band noise)
+        if (s.p14Enabled) {
+            current = swap(p14Tracking, current, sh -> {
+                sh.setFloat("u_severity",      s.trackingSeverity);
+                sh.setFloat("u_maxDisplacePx", s.trackingMaxDisplacePx);
+                sh.setFloat("u_fringeWidthPx", s.trackingFringeWidthPx);
+                sh.setInt  ("u_frameIndex",    s.frameIndex);
+            });
+        }
+
+        // p15 – p19: not yet implemented – pass through
 
         return current;
     }
@@ -285,6 +310,8 @@ public final class PostProcessStack {
         p10Timebase.destroy();
         p11DotCrawl.destroy();
         p12Dropout.destroy();
+        p13HeadSwitch.destroy();
+        p14Tracking.destroy();
     }
 
     // ── Functional interface ───────────────────────────────────────────────────

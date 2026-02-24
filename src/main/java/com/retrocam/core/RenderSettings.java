@@ -146,4 +146,20 @@ public final class RenderSettings {
     public float ccdSmearThreshold = 0.85f;
     public float ccdSmearIntensity = 0.009f;
     public int   ccdSmearLength    = 20;
+
+    // ── Phase 6: p13 Head-Switch Noise ───────────────────────────────────────────
+    // switchLines:  how many scanlines from the bottom are in the switch zone.
+    // jitterScale:  TBE amplitude multiplier at the switch line vs normal TBE.
+    // lumaRipple:   peak brightness oscillation amplitude (fraction of full scale).
+    // chromaRotAmp: peak hue rotation at switch line (radians; π/8 ≈ 22.5°).
+    public int   headSwitchLines    = 12;
+    public float headSwitchJitter   = 4.0f;
+    public float headSwitchRipple   = 0.10f;
+    public float headSwitchChroma   = 0.35f;
+
+    // ── Phase 6: p14 Tracking Error ──────────────────────────────────────────────
+    // trackingSeverity (already declared above) controls event probability.
+    // trackingMaxDisplacePx: maximum horizontal displacement in pixels.
+    public float trackingMaxDisplacePx = 28.0f;
+    public float trackingFringeWidthPx = 4.0f;
 }
