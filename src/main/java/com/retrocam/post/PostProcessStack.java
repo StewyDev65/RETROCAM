@@ -61,6 +61,8 @@ public final class PostProcessStack {
     private final PostProcessPass p15EdgeEnhance;
     private final PostProcessPass p16Interlace;
 
+    private final AtrousDenoiser atrous;
+
     // ── Construction ──────────────────────────────────────────────────────────
 
     public PostProcessStack(int fullscreenVao) {
@@ -87,6 +89,8 @@ public final class PostProcessStack {
         p14Tracking    = new PostProcessPass("p14_tracking",     "/shaders/post/p14_tracking.frag");
         p15EdgeEnhance = new PostProcessPass("p15_edge_enhance", "/shaders/post/p15_edge_enhance.frag");
         p16Interlace   = new PostProcessPass("p16_interlace",    "/shaders/post/p16_interlace.frag");
+
+        atrous = new AtrousDenoiser(fullscreenVao);
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -102,15 +106,13 @@ public final class PostProcessStack {
      * @param ts           current temporal state (AGC gain, etc.)
      * @return GL texture ID of the final LDR output (valid until next call)
      */
-    public int runOnAccum(int accumTexId, int totalSamples, float exposure,
-                          RenderSettings s, TemporalState ts) {
-        // p00: normalize running sum → linear HDR [0, ~1]
+    public int runOnAccum(int accumTexId, int gBufferTexId, int totalSamples, float exposure,
+                      RenderSettings s, TemporalState ts) {
         blit(p00Normalize, accumTexId, normalizeBuffer, sh -> {
             sh.setInt("u_totalSamples", Math.max(totalSamples, 1));
             sh.setFloat("u_exposure", exposure);
         });
-
-        return runChain(normalizeBuffer.textureId(), s, ts);
+        return runChain(normalizeBuffer.textureId(), gBufferTexId, totalSamples, s, ts);
     }
 
     /**
@@ -124,18 +126,23 @@ public final class PostProcessStack {
      * @return GL texture ID of the final output
      */
     public int runOnImage(int imageTexId, RenderSettings s, TemporalState ts) {
-        // Blit image into normalizeBuffer (converts to RGBA32F, applies no correction)
         blit(p00Normalize, imageTexId, normalizeBuffer, sh -> {
-            sh.setInt("u_totalSamples", 1);   // divide by 1 = identity
-            sh.setFloat("u_exposure", 1.0f);  // no exposure shift for test images
+            sh.setInt("u_totalSamples", 1);
+            sh.setFloat("u_exposure", 1.0f);
         });
-
-        return runChain(normalizeBuffer.textureId(), s, ts);
+        return runChain(normalizeBuffer.textureId(), 0, 1, s, ts);
     }
 
     // ── Internal chain ─────────────────────────────────────────────────────────
 
-    private int runChain(int current, RenderSettings s, TemporalState ts) {
+    private int runChain(int current, int gBufferTexId, int totalSamples, RenderSettings s, TemporalState ts) {
+
+        // À-trous denoiser: runs before VHS chain so effects layer on clean image.
+        // Auto-bypasses above atrousMaxSpp threshold (0 = always active).
+        boolean sppExceeded = s.atrousMaxSpp > 0 && totalSamples > s.atrousMaxSpp;
+        if (s.atrousEnabled && gBufferTexId != 0 && !sppExceeded) {
+            current = atrous.denoise(current, gBufferTexId, s);
+        }
 
         // p01 – VHS luma horizontal bandwidth limit
         if (s.p01Enabled) {
@@ -331,6 +338,7 @@ public final class PostProcessStack {
         p14Tracking.destroy();
         p15EdgeEnhance.destroy();
         p16Interlace.destroy();
+        atrous.destroy();
     }
 
     // ── Functional interface ───────────────────────────────────────────────────

@@ -256,8 +256,8 @@ public final class Main {
                     staticImageLoader.texId(), settings, temporal);
             } else {
                 finalTexId = postStack.runOnAccum(
-                    renderer.getAccumTexture(), renderer.getTotalSamples(),
-                    settings.exposure, settings, temporal);
+                    renderer.getAccumTexture(), renderer.getGBufferTexture(),
+                    renderer.getTotalSamples(), settings.exposure, settings, temporal);
             }
 
             // Increment frame counter each rendered frame (for noise seeds etc.)

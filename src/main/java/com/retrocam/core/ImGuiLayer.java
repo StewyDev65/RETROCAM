@@ -132,6 +132,7 @@ public final class ImGuiLayer {
         renderDisplaySection(s);
         renderCameraSection(s);
         renderSppmSection(s);
+        renderDenoisingSection(s);
         renderAgcSection(s);
         renderPostToggleSection(s);
         renderPostValuesSection(s);
@@ -242,6 +243,41 @@ public final class ImGuiLayer {
             ImGui.text(String.format("  Search radius : %.5f m", sppmSearchRadius));
             ImGui.text(String.format("  Iteration     : %d",     sppmIteration));
         }
+    }
+
+    // ── À-trous Denoiser ───────────────────────────────────────────────────────
+
+    private void renderDenoisingSection(RenderSettings s) {
+        if (!ImGui.collapsingHeader("Spatial Denoiser (À-Trous)")) return;
+
+        boolBuf.set(s.atrousEnabled);
+        if (ImGui.checkbox("Enable À-Trous Denoiser", boolBuf)) s.atrousEnabled = boolBuf.get();
+
+        if (!s.atrousEnabled) return;
+
+        intBuf[0] = s.atrousIterations;
+        if (ImGui.sliderInt("Iterations##atrous", intBuf, 1, 5))
+            s.atrousIterations = intBuf[0];
+        ImGui.sameLine();
+        ImGui.textDisabled("(filter radius 2^N px)");
+
+        floatBuf[0] = s.atrousSigmaColor;
+        if (ImGui.sliderFloat("Sigma Colour##atrous", floatBuf, 0.01f, 0.5f))
+            s.atrousSigmaColor = floatBuf[0];
+
+        floatBuf[0] = s.atrousSigmaNormal;
+        if (ImGui.sliderFloat("Sigma Normal##atrous", floatBuf, 1.0f, 128.0f))
+            s.atrousSigmaNormal = floatBuf[0];
+
+        floatBuf[0] = s.atrousSigmaDepth;
+        if (ImGui.sliderFloat("Sigma Depth##atrous", floatBuf, 0.05f, 2.0f))
+            s.atrousSigmaDepth = floatBuf[0];
+
+        intBuf[0] = s.atrousMaxSpp;
+        if (ImGui.sliderInt("Auto-Off SPP##atrous", intBuf, 0, 256))
+            s.atrousMaxSpp = intBuf[0];
+        ImGui.sameLine();
+        ImGui.textDisabled("(0 = always on)");
     }
 
     // ── AGC & Temporal ─────────────────────────────────────────────────────────

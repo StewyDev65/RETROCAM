@@ -77,6 +77,20 @@ public final class RenderSettings {
     public boolean neeEnabled        = true;
     public float   neeFireflyClamp   = 1.0f;  // max contribution multiplier per NEE sample
 
+    // ── À-trous spatial denoiser ──────────────────────────────────────────────────
+    // atrousEnabled:    master toggle.
+    // atrousIterations: number of sparse-kernel passes (1–5). 4 is typical.
+    // atrousSigmaColor: colour edge-stopping std-dev (lower = sharper edges).
+    // atrousSigmaNormal:normal power exponent (higher = sharper edges).
+    // atrousSigmaDepth: relative depth std-dev (lower = sharper depth edges).
+    // atrousMaxSpp:     auto-bypass above this sample count (0 = always active).
+    public boolean atrousEnabled     = false;
+    public int     atrousIterations  = 1;
+    public float   atrousSigmaColor  = 0.08f;
+    public float   atrousSigmaNormal = 32.0f;
+    public float   atrousSigmaDepth  = 0.5f;
+    public int     atrousMaxSpp      = 0;       // 0 = always active
+
     // ── Phase 6: frame counter (incremented by Main each render frame) ─────────
     // Used by noise/jitter shaders to produce frame-varying randomness.
     public int frameIndex = 0;

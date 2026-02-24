@@ -25,6 +25,8 @@ import static org.lwjgl.opengl.GL42.GL_TEXTURE_FETCH_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glBindImageTexture;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL43.*;
+import static org.lwjgl.opengl.GL30.GL_RGBA16F;
+import static org.lwjgl.opengl.GL15.GL_WRITE_ONLY;
 
 /**
  * Manages the progressive path-tracing accumulation loop.
@@ -37,6 +39,7 @@ public final class Renderer {
 
     private final ShaderProgram pathTraceShader;
     private int   accumTexture;
+    private int   gBufferTexture;
     private int   totalSamples = 0;
 
     private static final int RENDER_W = RenderSettings.RENDER_WIDTH;
@@ -47,6 +50,7 @@ public final class Renderer {
     public Renderer() {
         pathTraceShader = ShaderProgram.createCompute("/shaders/pathtrace.comp");
         accumTexture    = createAccumTexture();
+        gBufferTexture  = createGBufferTexture();
         System.out.println("[Renderer] Ready.");
     }
 
@@ -68,6 +72,7 @@ public final class Renderer {
 
         // Bind accumulation image (READ_WRITE)
         glBindImageTexture(0, accumTexture, 0, false, 0, GL_READ_WRITE, GL_RGBA32F);
+        glBindImageTexture(1, gBufferTexture, 0, false, 0, GL_WRITE_ONLY,  GL_RGBA16F);
 
         // Camera + optical uniforms (Phase 4: includes SA, LCA, IIR focal dist)
         tlc.uploadTo(pathTraceShader, orbit, settings, temporal);
@@ -105,20 +110,24 @@ public final class Renderer {
 
     public void reset() {
         if (accumTexture != 0) glDeleteTextures(accumTexture);
+        if (gBufferTexture != 0) glDeleteTextures(gBufferTexture);
+        gBufferTexture = createGBufferTexture();
         accumTexture  = createAccumTexture();
         totalSamples  = 0;
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
-    public int  getAccumTexture()  { return accumTexture;  }
-    public int  getTotalSamples()  { return totalSamples;  }
+    public int  getAccumTexture()    { return accumTexture;  }
+    public int  getGBufferTexture()  { return gBufferTexture; }
+    public int  getTotalSamples()    { return totalSamples;  }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
 
     public void destroy() {
         pathTraceShader.destroy();
         if (accumTexture != 0) glDeleteTextures(accumTexture);
+        if (gBufferTexture != 0) glDeleteTextures(gBufferTexture);
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -128,6 +137,17 @@ public final class Renderer {
         glBindTexture(GL_TEXTURE_2D, tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, RENDER_W, RENDER_H,
                      0, GL_RGBA, GL_FLOAT, (java.nio.ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return tex;
+    }
+
+    private static int createGBufferTexture() {
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, RENDER_W, RENDER_H,
+                    0, GL_RGBA, GL_FLOAT, (java.nio.ByteBuffer) null);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindTexture(GL_TEXTURE_2D, 0);

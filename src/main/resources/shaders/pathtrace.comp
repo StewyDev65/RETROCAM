@@ -3,6 +3,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 // ── Accumulation buffer (read previous sum, write new sum) ────────────────────
 layout(rgba32f, binding = 0) uniform image2D u_accumBuffer;
+layout(rgba16f, binding = 1) writeonly uniform image2D u_gBuffer;
 
 // ── Camera uniforms ───────────────────────────────────────────────────────────
 uniform vec3  u_camPos;
@@ -483,6 +484,16 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
     return radiance;
 }
 
+// ── G-buffer helper ───────────────────────────────────────────────────────────
+// Returns (shading_normal.xyz, hit_t) for the primary ray's first hit.
+// Used to seed the spatial denoiser on frame 0.  Sky/miss returns t = 1e4.
+vec4 sampleGBuffer(Ray ray) {
+    HitRecord hit = traverseBVH(ray.origin, ray.dir);
+    if (!hit.valid) return vec4(0.0, 1.0, 0.0, 1e4);
+    vec3 n = dot(ray.dir, hit.normal) < 0.0 ? hit.normal : -hit.normal;
+    return vec4(n, hit.t);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 //
 // Longitudinal CA implementation: see original header comment — unchanged.
@@ -521,6 +532,10 @@ void main() {
 
     if (u_frameIndex == 0) {
         imageStore(u_accumBuffer, pixel, vec4(radiance, 1.0));
+        // Capture G-buffer on first frame — camera is static during accumulation
+        uint gbufSeed = initSeed(pixel, 99991);
+        Ray  gbufRay  = generateRay(pixel, gbufSeed, 0.0);
+        imageStore(u_gBuffer, pixel, sampleGBuffer(gbufRay));
     } else {
         vec4 prev = imageLoad(u_accumBuffer, pixel);
         imageStore(u_accumBuffer, pixel, prev + vec4(radiance, 1.0));
