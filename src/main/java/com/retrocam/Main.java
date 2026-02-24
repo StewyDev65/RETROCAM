@@ -10,12 +10,32 @@ import com.retrocam.gl.ShaderProgram;
 import com.retrocam.scene.Scene;
 import com.retrocam.scene.SceneUploader;
 import com.retrocam.scene.SPPMManager;
+import com.retrocam.scene.SceneEditor;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
+import imgui.ImGui;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
+import static org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT;
+import static org.lwjgl.opengl.GL11.GL_DEPTH_TEST;
+import static org.lwjgl.opengl.GL11.GL_RENDERER;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_2D;
+import static org.lwjgl.opengl.GL11.GL_TRIANGLES;
+import static org.lwjgl.opengl.GL11.glBindTexture;
+import static org.lwjgl.opengl.GL11.glClear;
+import static org.lwjgl.opengl.GL11.glClearColor;
+import static org.lwjgl.opengl.GL11.glDisable;
+import static org.lwjgl.opengl.GL11.glDrawArrays;
+import static org.lwjgl.opengl.GL11.glGetString;
+import static org.lwjgl.opengl.GL11.glViewport;
+import static org.lwjgl.opengl.GL13.GL_TEXTURE0;
+import static org.lwjgl.opengl.GL13.glActiveTexture;
+import static org.lwjgl.opengl.GL20.GL_SHADING_LANGUAGE_VERSION;
+import static org.lwjgl.opengl.GL30.glBindVertexArray;
+import static org.lwjgl.opengl.GL30.glDeleteVertexArrays;
+import static org.lwjgl.opengl.GL30.glGenVertexArrays;
 import static org.lwjgl.opengl.GL43.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
@@ -32,7 +52,7 @@ public final class Main {
     private TemporalState  temporal;
 
     // ── Scene ─────────────────────────────────────────────────────────────────
-    private Scene         scene;
+    private SceneEditor   sceneEditor;
     private SceneUploader sceneUploader;
 
     // ── Rendering ─────────────────────────────────────────────────────────────
@@ -69,6 +89,7 @@ public final class Main {
         initScene();
         initGpuResources();
         initImGui();
+        camera.setImguiMouseGuard(() -> ImGui.getIO().getWantCaptureMouse());
         snapshotSettings();
 
         System.out.println("[RetroCam] Phase 4 ready — optical effects (SA, LCA, AF lag, polygon bokeh)");
@@ -129,9 +150,10 @@ public final class Main {
     }
 
     private void initScene() {
-        scene         = Scene.createDefault();
+        sceneEditor   = SceneEditor.createDefault();
         sceneUploader = new SceneUploader();
-        sceneUploader.upload(scene);
+        sceneUploader.upload(sceneEditor.buildScene());
+        sceneEditor.clearDirty();
     }
 
     private void initGpuResources() {
@@ -157,6 +179,16 @@ public final class Main {
 
             glfwPollEvents();
             camera.update(dt, window);
+
+            // Re-upload scene when the editor marks geometry or materials dirty
+            if (sceneEditor.isDirty()) {
+                sceneUploader.upload(sceneEditor.buildScene());
+                renderer.reset();
+                sppmManager.reset(settings);
+                camera.clearDirty();
+                snapshotSettings();
+                sceneEditor.clearDirty();
+            }
 
             // ── Phase 4: wire AF target each frame ────────────────────────────
             // The ImGui slider drives settings.focusDistM (the desired distance).
@@ -199,7 +231,7 @@ public final class Main {
             imGui.beginFrame();
             imGui.setStats(renderer.getTotalSamples(), currentFps, temporal.agcGain);
             imGui.setSppmStats(sppmManager.getSearchRadius(), sppmManager.getIteration());
-            imGui.render(settings);
+            imGui.render(settings, sceneEditor, dt);
             imGui.endFrame();
 
             glfwSwapBuffers(window);

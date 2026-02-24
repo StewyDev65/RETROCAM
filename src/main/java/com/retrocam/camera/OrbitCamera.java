@@ -44,6 +44,13 @@ public final class OrbitCamera {
     private double lastMouseX, lastMouseY;
     private boolean leftDown, middleDown, rightDown;
 
+    // ── ImGui mouse guard ─────────────────────────────────────────────────────
+    private java.util.function.BooleanSupplier imguiWantsMouse = () -> false;
+
+    public void setImguiMouseGuard(java.util.function.BooleanSupplier guard) {
+        this.imguiWantsMouse = guard;
+    }
+
     // ── Computed matrices (row-major, uploaded as uniforms) ───────────────────
     private final float[] viewMatrix = new float[16];
     private final float[] projMatrix = new float[16];
@@ -52,6 +59,11 @@ public final class OrbitCamera {
 
     public void registerCallbacks(long window) {
         glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            if (imguiWantsMouse.getAsBoolean()) {
+                // release all buttons so dragging doesn't bleed through
+                leftDown = middleDown = rightDown = false;
+                return;
+            }
             boolean pressed = action == GLFW_PRESS;
             if (button == GLFW_MOUSE_BUTTON_LEFT)   leftDown   = pressed;
             if (button == GLFW_MOUSE_BUTTON_MIDDLE) middleDown = pressed;
@@ -69,6 +81,7 @@ public final class OrbitCamera {
             double dy = y - lastMouseY;
             lastMouseX = x;
             lastMouseY = y;
+            if (imguiWantsMouse.getAsBoolean()) return;
 
             if (leftDown && !middleDown) {
                 theta -= (float)(dx * orbitSensitivity);
@@ -95,6 +108,7 @@ public final class OrbitCamera {
         });
 
         glfwSetScrollCallback(window, (win, xOff, yOff) -> {
+            if (imguiWantsMouse.getAsBoolean()) return;
             radius -= (float)(yOff * scrollZoomStep);
             radius  = Math.max(0.5f, radius);
             dirty   = true;
