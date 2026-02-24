@@ -429,11 +429,38 @@ public final class ImGuiLayer {
         if (ImGui.sliderFloat("Fringe Width (px)##p14", floatBuf, 1f, 12f))
             s.trackingFringeWidthPx = floatBuf[0];
 
-        // Unimplemented pass placeholders
-        ImGui.separator();
+        // p15 – Edge Enhancement (Aperture Correction)
+        boolBuf.set(s.p15Enabled);
+        if (ImGui.checkbox("##p15en", boolBuf)) s.p15Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p15  Edge Enhancement");
         floatBuf[0] = s.edgeEnhanceAmount;
-        if (ImGui.sliderFloat("Edge Enhance Amount##p15", floatBuf, 0f, 4f))
+        if (ImGui.sliderFloat("Amount##p15", floatBuf, 0.5f, 3.5f))
             s.edgeEnhanceAmount = floatBuf[0];
+        floatBuf[0] = s.edgeEnhanceCoreThreshold;
+        if (ImGui.sliderFloat("Coring Threshold##p15", floatBuf, 0f, 0.10f))
+            s.edgeEnhanceCoreThreshold = floatBuf[0];
+
+        // p16 – Interlace
+        boolBuf.set(s.p16Enabled);
+        if (ImGui.checkbox("##p16en", boolBuf)) s.p16Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p16  Interlace");
+        floatBuf[0] = s.interlaceFieldOffsetPx;
+        if (ImGui.sliderFloat("Field Offset (px)##p16", floatBuf, 0f, 1.0f))
+            s.interlaceFieldOffsetPx = floatBuf[0];
+        floatBuf[0] = s.interlaceCombStrength;
+        if (ImGui.sliderFloat("Comb Strength (px)##p16", floatBuf, 0f, 6.0f))
+            s.interlaceCombStrength = floatBuf[0];
+        floatBuf[0] = s.interlaceCombEdgeThresh;
+        if (ImGui.sliderFloat("Comb Edge Thresh##p16", floatBuf, 0.01f, 0.15f))
+            s.interlaceCombEdgeThresh = floatBuf[0];
+        floatBuf[0] = s.interlaceLineWeighting;
+        if (ImGui.sliderFloat("Line Weighting##p16", floatBuf, 0f, 0.20f))
+            s.interlaceLineWeighting = floatBuf[0];
+
+        // p17 placeholder (vignette strength used when p17 is implemented)
+        ImGui.separator();
         floatBuf[0] = s.vignetteStrength;
         if (ImGui.sliderFloat("Vignette Strength##p17", floatBuf, 0f, 3f))
             s.vignetteStrength = floatBuf[0];

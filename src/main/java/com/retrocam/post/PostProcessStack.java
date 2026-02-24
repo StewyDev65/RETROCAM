@@ -58,6 +58,8 @@ public final class PostProcessStack {
     private final PostProcessPass p12Dropout;     // magnetic tape dropout streaks
     private final PostProcessPass p13HeadSwitch;
     private final PostProcessPass p14Tracking;
+    private final PostProcessPass p15EdgeEnhance;
+    private final PostProcessPass p16Interlace;
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -83,6 +85,8 @@ public final class PostProcessStack {
         p12Dropout     = new PostProcessPass("p12_dropout",      "/shaders/post/p12_dropout.frag");
         p13HeadSwitch  = new PostProcessPass("p13_headswitch",   "/shaders/post/p13_headswitch.frag");
         p14Tracking    = new PostProcessPass("p14_tracking",     "/shaders/post/p14_tracking.frag");
+        p15EdgeEnhance = new PostProcessPass("p15_edge_enhance", "/shaders/post/p15_edge_enhance.frag");
+        p16Interlace   = new PostProcessPass("p16_interlace",    "/shaders/post/p16_interlace.frag");
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -248,7 +252,20 @@ public final class PostProcessStack {
             });
         }
 
-        // p15 – p19: not yet implemented – pass through
+        if (s.p15Enabled) {
+            current = swap(p15EdgeEnhance, current, sh -> {
+                sh.setFloat("u_amount",        s.edgeEnhanceAmount);
+                sh.setFloat("u_coreThreshold", s.edgeEnhanceCoreThreshold);
+            });
+        }
+        if (s.p16Enabled) {
+            current = swap(p16Interlace, current, sh -> {
+                sh.setFloat("u_fieldOffsetPx",  s.interlaceFieldOffsetPx);
+                sh.setFloat("u_combStrength",   s.interlaceCombStrength);
+                sh.setFloat("u_combEdgeThresh", s.interlaceCombEdgeThresh);
+                sh.setFloat("u_lineWeighting",  s.interlaceLineWeighting);
+            });
+        }
 
         return current;
     }
@@ -312,6 +329,8 @@ public final class PostProcessStack {
         p12Dropout.destroy();
         p13HeadSwitch.destroy();
         p14Tracking.destroy();
+        p15EdgeEnhance.destroy();
+        p16Interlace.destroy();
     }
 
     // ── Functional interface ───────────────────────────────────────────────────

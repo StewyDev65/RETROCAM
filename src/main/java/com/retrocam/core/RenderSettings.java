@@ -162,4 +162,13 @@ public final class RenderSettings {
     // trackingMaxDisplacePx: maximum horizontal displacement in pixels.
     public float trackingMaxDisplacePx = 28.0f;
     public float trackingFringeWidthPx = 4.0f;
+
+    // ── Phase 6: p15 Edge Enhancement ────────────────────────────────────────────
+    public float edgeEnhanceCoreThreshold = 0.025f;
+
+    // ── Phase 6: p16 Interlace ────────────────────────────────────────────────────
+    public float interlaceFieldOffsetPx  = 0.5f;
+    public float interlaceCombStrength   = 1.5f;
+    public float interlaceCombEdgeThresh = 0.04f;
+    public float interlaceLineWeighting  = 0.05f;
 }
