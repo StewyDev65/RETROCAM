@@ -290,12 +290,17 @@ vec3 sampleDirectLight(vec3 hitPos, vec3 n, vec3 albedo, inout uint seed) {
     vec3  shadowDir = toLight / dist;
 
     float cosHit = dot(n, shadowDir);
-    if (cosHit <= 0.0) return vec3(0.0);  // light is below the surface
+    if (cosHit <= 0.0) return vec3(0.0);
 
-    // abs() treats the emitter as two-sided; back-face samples are still
-    // rejected by geometry occlusion in the shadow test.
     float cosLight = abs(dot(light.normal, shadowDir));
     if (cosLight <= 0.0) return vec3(0.0);
+
+    // Clamp dist² from below to prevent the area→solid-angle PDF singularity.
+    // When dist < sqrt(light.area) we are geometrically "inside" the light's
+    // subtended region and the 1/dist² estimator breaks down. By flooring dist²
+    // at light.area we keep the PDF well-conditioned without biasing samples at
+    // normal distances (where dist >> sqrt(area) always holds).
+    float dist2Safe = max(dist2, light.area);
 
     // ── 4. Visibility test ────────────────────────────────────────────────────
     // Offset origin along surface normal to avoid self-intersection.
@@ -304,16 +309,14 @@ vec3 sampleDirectLight(vec3 hitPos, vec3 n, vec3 albedo, inout uint seed) {
     if (!shadowRay(shadowOrigin, shadowDir, dist - 4e-3)) return vec3(0.0);
 
     // ── 5. Evaluate estimator ─────────────────────────────────────────────────
-    // pdf_sa = (1/light.area) * dist² / cosLight
-    // Lo     = (albedo/PI) * Le * cosHit / (pickPdf * pdf_sa)
-    float pdfSolidAngle = dist2 / (light.area * cosLight);
+    float pdfSolidAngle = dist2Safe / (light.area * cosLight);  // uses clamped dist²
     float totalPdf      = pickPdf * pdfSolidAngle;
     if (totalPdf <= 0.0) return vec3(0.0);
 
     vec3 contrib = (albedo / 3.14159265359) * light.emission * cosHit / totalPdf;
 
-    // Clamp per-sample contribution to suppress 1/dist² singularity fireflies.
-    // Proportional to emission luminance so the clamp remains scene-scale agnostic.
+    // Secondary safety clamp — now only fires in genuinely degenerate geometry,
+    // not as a routine suppression mechanism.
     float emissionLum = dot(light.emission, vec3(0.299, 0.587, 0.114));
     return min(contrib, vec3(emissionLum * u_neeFireflyClamp));
     }
