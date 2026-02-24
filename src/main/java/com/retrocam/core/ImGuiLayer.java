@@ -208,6 +208,20 @@ public final class ImGuiLayer {
     private void renderSppmSection(RenderSettings s) {
         if (!ImGui.collapsingHeader("SPPM Caustics")) return;
 
+        // NEE toggle lives here because both systems handle direct/caustic lighting
+        boolBuf.set(s.neeEnabled);
+        if (ImGui.checkbox("NEE Direct Lighting", boolBuf)) s.neeEnabled = boolBuf.get();
+
+        if (s.neeEnabled) {
+            floatBuf[0] = s.neeFireflyClamp;
+            if (ImGui.sliderFloat("NEE Firefly Clamp", floatBuf, 1.0f, 100.0f))
+                s.neeFireflyClamp = floatBuf[0];
+        }
+
+        ImGui.sameLine();
+        ImGui.textDisabled("(Next Event Estimation)");
+        ImGui.separator();
+
         boolBuf.set(s.sppmEnabled);
         if (ImGui.checkbox("Enable SPPM Caustics", boolBuf)) s.sppmEnabled = boolBuf.get();
 

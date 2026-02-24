@@ -74,6 +74,8 @@ public final class RenderSettings {
 
     // ── Path tracer display (Phase 3) ─────────────────────────────────────────
     public float exposure = 1.0f;   // EV multiplier before tonemapping
+    public boolean neeEnabled        = true;
+    public float   neeFireflyClamp   = 1.0f;  // max contribution multiplier per NEE sample
 
     // ── Phase 6: frame counter (incremented by Main each render frame) ─────────
     // Used by noise/jitter shaders to produce frame-varying randomness.

@@ -5,6 +5,25 @@ import com.retrocam.camera.ThinLensCamera;
 import com.retrocam.gl.ShaderProgram;
 import com.retrocam.scene.SceneUploader;
 
+import static org.lwjgl.opengl.GL11.GL_FLOAT;
+import static org.lwjgl.opengl.GL11.GL_NEAREST;
+import static org.lwjgl.opengl.GL11.GL_RGBA;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_2D;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_MAG_FILTER;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_MIN_FILTER;
+import static org.lwjgl.opengl.GL11.glBindTexture;
+import static org.lwjgl.opengl.GL11.glDeleteTextures;
+import static org.lwjgl.opengl.GL11.glGenTextures;
+import static org.lwjgl.opengl.GL11.glTexImage2D;
+import static org.lwjgl.opengl.GL11.glTexParameteri;
+import static org.lwjgl.opengl.GL15.GL_READ_WRITE;
+import static org.lwjgl.opengl.GL20.glGetUniformLocation;
+import static org.lwjgl.opengl.GL20.glUniform2i;
+import static org.lwjgl.opengl.GL30.GL_RGBA32F;
+import static org.lwjgl.opengl.GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+import static org.lwjgl.opengl.GL42.GL_TEXTURE_FETCH_BARRIER_BIT;
+import static org.lwjgl.opengl.GL42.glBindImageTexture;
+import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL43.*;
 
 /**
@@ -55,6 +74,12 @@ public final class Renderer {
 
         // Temporal uniforms (AGC gain, time, tape age, white balance)
         temporal.uploadTo(pathTraceShader, settings);
+
+        // NEE direct light sampling uniforms
+        pathTraceShader.setInt  ("u_neeEnabled",       settings.neeEnabled ? 1 : 0);
+        pathTraceShader.setInt  ("u_lightCount",        sceneUploader.getLightCount());
+        pathTraceShader.setFloat("u_totalLightPower",   sceneUploader.getTotalLightPower());
+        pathTraceShader.setFloat("u_neeFireflyClamp",   settings.neeFireflyClamp);
 
         // Frame counter (used as RNG seed multiplier in shader)
         pathTraceShader.setInt("u_frameIndex", totalSamples);

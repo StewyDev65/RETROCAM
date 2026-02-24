@@ -25,6 +25,12 @@ uniform float u_agcGain;
 uniform float u_time;
 uniform float u_tapeAge;
 
+// ── NEE uniforms ──────────────────────────────────────────────────────────────
+uniform int   u_lightCount;         // number of emissive triangles in LightBuffer
+uniform float u_totalLightPower;    // sum of (luminance * area * PI) over all lights
+uniform int   u_neeEnabled;         // 1 = use Next Event Estimation, 0 = pure path trace
+uniform float u_neeFireflyClamp;    // max NEE contribution multiplier (default 20.0)
+
 // ── GPU Scene Data ────────────────────────────────────────────────────────────
 
 struct Triangle {
@@ -51,9 +57,20 @@ struct Material {
     float p0; float p1; float p2; float p3;
 };
 
-layout(std430, binding = 0) readonly buffer TriBuffer  { Triangle  triangles[]; };
-layout(std430, binding = 1) readonly buffer BVHBuffer  { BVHNode   nodes[];     };
-layout(std430, binding = 2) readonly buffer MatBuffer  { Material  materials[]; };
+// Light struct layout matches SceneUploader (std430, 20 floats = 80 bytes):
+//   vec3 v0 + area | vec3 v1 + pad | vec3 v2 + pad | vec3 emission + power | vec3 normal + cdfWeight
+struct Light {
+    vec3 v0;       float area;
+    vec3 v1;       float pad1;
+    vec3 v2;       float pad2;
+    vec3 emission; float power;
+    vec3 normal;   float cdfWeight;
+};
+
+layout(std430, binding = 0) readonly buffer TriBuffer   { Triangle triangles[]; };
+layout(std430, binding = 1) readonly buffer BVHBuffer   { BVHNode  nodes[];     };
+layout(std430, binding = 2) readonly buffer MatBuffer   { Material materials[]; };
+layout(std430, binding = 3) readonly buffer LightBuffer { Light    lights[];    };
 
 // ── PCG hash RNG ──────────────────────────────────────────────────────────────
 
@@ -109,7 +126,7 @@ bool intersectTriangle(vec3 ro, vec3 rd, int idx, out float t, out vec2 bary) {
     return true;
 }
 
-// ── BVH traversal ─────────────────────────────────────────────────────────────
+// ── BVH traversal (full — returns closest hit) ────────────────────────────────
 
 struct HitRecord {
     bool  valid;
@@ -162,6 +179,45 @@ HitRecord traverseBVH(vec3 ro, vec3 rd) {
     return rec;
 }
 
+// ── Shadow ray (visibility only — early-exit, minimal stack) ─────────────────
+//
+// Returns true if the segment [ro, ro + rd * maxDist] is unoccluded.
+// Uses a reduced stack (32 entries) since most shadow ray BVH depths are
+// shallow, saving register pressure vs. the full 64-entry traversal stack.
+
+bool shadowRay(vec3 ro, vec3 rd, float maxDist) {
+    vec3 invRd = 1.0 / rd;
+
+    int stack[32];
+    int top = 0;
+    stack[top++] = 0;
+
+    while (top > 0) {
+        int     idx  = stack[--top];
+        BVHNode node = nodes[idx];
+
+        float aabbT;
+        if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, aabbT))
+            continue;
+        if (aabbT > maxDist) continue;
+
+        if (node.primCount > 0) {
+            for (int i = node.primStart; i < node.primStart + node.primCount; i++) {
+                float t; vec2 bary;
+                // Any hit closer than maxDist means the path is blocked
+                if (intersectTriangle(ro, rd, i, t, bary) && t < maxDist)
+                    return false;
+            }
+        } else {
+            if (top < 30) {
+                stack[top++] = node.rightChild;
+                stack[top++] = node.leftChild;
+            }
+        }
+    }
+    return true; // unoccluded
+}
+
 // ── Sampling helpers ──────────────────────────────────────────────────────────
 
 vec3 sampleCosineHemisphere(vec2 u, vec3 n) {
@@ -191,17 +247,78 @@ vec2 sampleNGon(inout uint seed, float radius, int N) {
     return (r1 * v0 + r2 * v1) * radius;
 }
 
+// ── NEE: Direct light sampling ────────────────────────────────────────────────
+//
+// Selects one emissive triangle from LightBuffer using the pre-built CDF,
+// samples a uniform point on it, tests visibility via a shadow ray, and
+// returns the direct Lambertian contribution for that sample.
+//
+// PDF derivation:
+//   P(pick light i)   = light.power / u_totalLightPower          [CDF selection]
+//   P(point on tri)   = 1 / light.area                           [uniform area]
+//   Convert area → solid-angle:  pdf_sa = (1/area) * dist² / cosLight
+//   Total PDF         = pickPdf * pdf_sa
+//
+//   Lo = (albedo/PI) * Le * cosHit / totalPdf
+//
+// cosLight uses abs() to handle both-face normals from the triangle buffer —
+// the emitter geometry in a Cornell box is always enclosed so back-facing
+// samples are blocked by the geometry in the shadow test anyway.
+
+vec3 sampleDirectLight(vec3 hitPos, vec3 n, vec3 albedo, inout uint seed) {
+    if (u_lightCount <= 0 || u_totalLightPower <= 0.0) return vec3(0.0);
+
+    // ── 1. Select a light by CDF ──────────────────────────────────────────────
+    float uSelect = rand(seed);
+    int selected = u_lightCount - 1;
+    for (int i = 0; i < u_lightCount; i++) {
+        if (uSelect < lights[i].cdfWeight) { selected = i; break; }
+    }
+    Light light = lights[selected];
+    float pickPdf = light.power / u_totalLightPower;
+    if (pickPdf <= 0.0) return vec3(0.0);
+
+    // ── 2. Sample uniform point on the selected triangle ─────────────────────
+    float r1 = rand(seed), r2 = rand(seed);
+    if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+    vec3 lightPos = light.v0 + r1 * (light.v1 - light.v0) + r2 * (light.v2 - light.v0);
+
+    // ── 3. Geometry terms ─────────────────────────────────────────────────────
+    vec3  toLight   = lightPos - hitPos;
+    float dist2     = dot(toLight, toLight);
+    float dist      = sqrt(dist2);
+    vec3  shadowDir = toLight / dist;
+
+    float cosHit = dot(n, shadowDir);
+    if (cosHit <= 0.0) return vec3(0.0);  // light is below the surface
+
+    // abs() treats the emitter as two-sided; back-face samples are still
+    // rejected by geometry occlusion in the shadow test.
+    float cosLight = abs(dot(light.normal, shadowDir));
+    if (cosLight <= 0.0) return vec3(0.0);
+
+    // ── 4. Visibility test ────────────────────────────────────────────────────
+    // Offset origin along surface normal to avoid self-intersection.
+    // Shrink maxDist by a small epsilon to avoid hitting the light surface itself.
+    vec3 shadowOrigin = hitPos + n * 2e-3;
+    if (!shadowRay(shadowOrigin, shadowDir, dist - 4e-3)) return vec3(0.0);
+
+    // ── 5. Evaluate estimator ─────────────────────────────────────────────────
+    // pdf_sa = (1/light.area) * dist² / cosLight
+    // Lo     = (albedo/PI) * Le * cosHit / (pickPdf * pdf_sa)
+    float pdfSolidAngle = dist2 / (light.area * cosLight);
+    float totalPdf      = pickPdf * pdfSolidAngle;
+    if (totalPdf <= 0.0) return vec3(0.0);
+
+    vec3 contrib = (albedo / 3.14159265359) * light.emission * cosHit / totalPdf;
+
+    // Clamp per-sample contribution to suppress 1/dist² singularity fireflies.
+    // Proportional to emission luminance so the clamp remains scene-scale agnostic.
+    float emissionLum = dot(light.emission, vec3(0.299, 0.587, 0.114));
+    return min(contrib, vec3(emissionLum * u_neeFireflyClamp));
+    }
+
 // ── Thin-lens ray generation with SA + LCA support ───────────────────────────
-//
-// focalDistOffset: added to u_focalDist for longitudinal CA.
-//   Pass u_lcaDelta.r / .g / .b for the three channel sub-traces.
-//
-// Spherical Aberration:
-//   Real lenses focus marginal rays (passing through the lens edge) at a
-//   slightly shorter distance than paraxial rays (near the center).
-//   We model this by increasing the effective focal distance proportionally
-//   to the squared normalised aperture radius of the lens sample.
-//   normalizedR2 ∈ [0,1]: 0 = on-axis (no SA), 1 = full aperture (max SA).
 
 struct Ray { vec3 origin; vec3 dir; };
 
@@ -226,13 +343,11 @@ Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset) {
         : vec2(0.0);
 
     // ── Spherical Aberration ──────────────────────────────────────────────────
-    // Compute normalised squared aperture radius of this sample [0, 1].
-    // Edge rays (normalizedR2 = 1) get shifted focal distance by u_saStrength.
     float normalizedR2 = (u_lensRadius > 1e-6)
         ? clamp(dot(lensSample, lensSample) / (u_lensRadius * u_lensRadius), 0.0, 1.0)
         : 0.0;
     float effectiveFocalDist = u_focalDist + focalDistOffset + u_saStrength * normalizedR2;
-    effectiveFocalDist = max(effectiveFocalDist, 0.01); // guard against negative focal dist
+    effectiveFocalDist = max(effectiveFocalDist, 0.01);
 
     // Project pinhole ray to the focal plane
     float tFocal  = effectiveFocalDist / dot(pinholeDir, u_camForward);
@@ -248,6 +363,17 @@ Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset) {
 }
 
 // ── Path trace ────────────────────────────────────────────────────────────────
+//
+// NEE strategy:
+//   At every Lambertian (diffuse) surface hit, we explicitly sample the light
+//   sources via a shadow ray (sampleDirectLight). This directly estimates the
+//   first-order lighting integral with low variance.
+//
+//   To avoid double-counting, we track lastBounceWasDiffuse. When a BSDF-sampled
+//   path ray hits an emissive surface after a diffuse bounce, we suppress adding
+//   that emitter's contribution (NEE already accounted for it). If the previous
+//   bounce was specular (glass/metal) or this is the camera ray (bounce 0), we
+//   DO add the emitter contribution because NEE cannot sample delta BSDFs.
 
 vec3 traceRadiance(Ray ray, inout uint seed) {
     vec3 radiance   = vec3(0.0);
@@ -255,13 +381,17 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
     vec3 ro = ray.origin;
     vec3 rd = ray.dir;
 
+    // false = camera / specular bounce — emitter hits should be counted.
+    // true  = previous bounce was diffuse — NEE already handled direct light.
+    bool lastBounceWasDiffuse = false;
+
     const int MAX_BOUNCES = 6;
 
     for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
         HitRecord hit = traverseBVH(ro, rd);
 
         if (!hit.valid) {
-            // Black sky for enclosed Cornell box; replace with sky HDR in later phases
+            // Black sky for enclosed Cornell box
             break;
         }
 
@@ -270,8 +400,14 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
         // Two-sided shading — flip normal to face incoming ray
         vec3 n = dot(rd, hit.normal) < 0.0 ? hit.normal : -hit.normal;
 
-        // Emission
-        radiance += throughput * mat.emission * mat.emissionStrength;
+        // ── Emission ──────────────────────────────────────────────────────────
+        // Skip emitter contribution when the previous bounce was diffuse:
+        // NEE's shadow ray already sampled this light source directly.
+        // Always count emission on the camera ray (bounce 0) and after
+        // specular bounces (glass, metal) because NEE cannot handle delta BSDFs.
+        if (!lastBounceWasDiffuse) {
+            radiance += throughput * mat.emission * mat.emissionStrength;
+        }
 
         // Russian roulette termination after bounce 3
         if (bounce >= 3) {
@@ -285,6 +421,7 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
         // ── BSDF selection ────────────────────────────────────────────────────
         if (mat.transmission > 0.5) {
             // ── Glass: Fresnel-weighted reflection / refraction ───────────────
+            // Specular BSDF — no NEE (delta distribution)
             bool entering = dot(rd, hit.normal) < 0.0;
             float eta     = entering ? (1.0 / mat.ior) : mat.ior;
             float cosI    = abs(dot(rd, n));
@@ -292,23 +429,22 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
             float F       = r0 + (1.0 - r0) * pow(clamp(1.0 - cosI, 0.0, 1.0), 5.0);
 
             if (rand(seed) < F) {
-                // Reflect
                 rd = reflect(rd, n);
                 ro = hit.pos + rd * 2e-3;
             } else {
-                // Refract
                 vec3 refracted = refract(rd, n, eta);
                 if (dot(refracted, refracted) < 0.001) refracted = reflect(rd, n); // TIR
                 rd = normalize(refracted);
                 ro = hit.pos + rd * 2e-3;
             }
-            throughput *= mat.albedo; // tint (white for clear glass)
+            throughput *= mat.albedo;
+            lastBounceWasDiffuse = false;
 
         } else if (mat.metallic > 0.5) {
             // ── Metal: glossy reflection with roughness perturbation ──────────
+            // Specular BSDF — no NEE
             vec3 reflected = reflect(rd, n);
             if (mat.roughness > 0.001) {
-                // Perturb reflected direction by roughness
                 vec3 up2 = abs(reflected.y) < 0.9999 ? vec3(0,1,0) : vec3(1,0,0);
                 vec3 t2  = normalize(cross(up2, reflected));
                 vec3 b2  = cross(reflected, t2);
@@ -322,12 +458,22 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
             rd = reflected;
             ro = hit.pos + n * 2e-3;
             throughput *= mat.albedo;
+            lastBounceWasDiffuse = false;
 
         } else {
             // ── Lambertian diffuse ────────────────────────────────────────────
+            // NEE: explicitly sample a light source and add direct contribution.
+            // This is the core variance-reduction step — replaces the need for a
+            // BSDF-sampled ray to accidentally find the light.
+            if (u_neeEnabled != 0) {
+                radiance += throughput * sampleDirectLight(hit.pos, n, mat.albedo, seed);
+            }
+
+            // Continue path with a cosine-weighted hemisphere sample (indirect).
             rd          = sampleCosineHemisphere(rand2(seed), n);
             throughput *= mat.albedo;
             ro = hit.pos + n * 1e-3;
+            lastBounceWasDiffuse = true;
         }
     }
 
@@ -336,16 +482,7 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 //
-// Longitudinal CA implementation:
-//   Three independent path traces are executed per pixel per frame — one for
-//   each colour channel — each with a different focal distance offset from
-//   u_lcaDelta. This correctly models how real lenses focus different
-//   wavelengths at different depths (chromatic focal shift). The R, G, B
-//   results are written into the respective channels of the accumulation
-//   buffer and averaged across all frames by the display pass.
-//
-//   Each channel uses a seeded independently from the others (frame * 3 + ch)
-//   to ensure uncorrelated Monte Carlo samples and avoid structured noise.
+// Longitudinal CA implementation: see original header comment — unchanged.
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -353,13 +490,9 @@ void main() {
 
     vec3 radiance;
 
-    // Skip triple-trace when LCA deltas are negligible.
-    // The spec requires 3 sub-passes for longitudinal CA — this preserves
-    // that fully when active, and collapses to 1 pass when the effect is off.
     bool lcaActive = (abs(u_lcaDelta.r) + abs(u_lcaDelta.b)) > 1e-4;
 
     if (lcaActive) {
-        // Full R3 spec: independent per-channel seeds to avoid correlated noise
         uint seedR = initSeed(pixel, u_frameIndex * 3 + 0);
         uint seedG = initSeed(pixel, u_frameIndex * 3 + 1);
         uint seedB = initSeed(pixel, u_frameIndex * 3 + 2);
@@ -375,7 +508,6 @@ void main() {
 
         radiance = vec3(radR, radG, radB);
     } else {
-        // Single trace — LCA is off, no need for per-channel focal separation
         uint seed = initSeed(pixel, u_frameIndex);
         Ray ray = generateRay(pixel, seed, 0.0);
         radiance = traceRadiance(ray, seed);
