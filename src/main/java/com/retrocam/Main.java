@@ -179,7 +179,8 @@ public final class Main {
         // Build once so pipeline has all dependencies wired before any tick
         renderContext = new com.retrocam.export.RenderContext(
             renderer, sppmManager, postStack, sceneUploader,
-            camera, thinLens, temporal, settings);
+            camera, thinLens, temporal, settings,
+            displayShader, fullscreenVao);
         imGui.setRenderPipeline(renderPipeline);
     }
 

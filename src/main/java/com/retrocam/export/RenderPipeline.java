@@ -64,6 +64,8 @@ public final class RenderPipeline {
     private FrameExporter frameExporter;
     private VideoExporter videoExporter;
 
+    private com.retrocam.gl.Framebuffer exportDisplayFbo;
+
     /**
      * Dedicated temporal state for video rendering. Evolved deterministically
      * from frame 0 so that AGC, white-balance drift, and auto-focus tracking
@@ -92,6 +94,10 @@ public final class RenderPipeline {
 
         this.frameExporter = new FrameExporter(
             RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT);
+
+        exportDisplayFbo = new com.retrocam.gl.Framebuffer(
+            RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT,
+            org.lwjgl.opengl.GL30.GL_RGBA8);
         this.videoExporter = new VideoExporter();
 
         if (newJob.format.isVideo) {
@@ -105,6 +111,31 @@ public final class RenderPipeline {
         statusMessage = "Starting render…";
         System.out.println("[RenderPipeline] Job started: " + newJob.format.label
             + " | " + totalFrames + " frame(s) | " + newJob.samplesPerFrame + " spp");
+    }
+
+    /**
+     * Runs the post-stack output through the display shader (ACES + gamma)
+     * into an offscreen FBO. Returns that FBO's texture ID — this matches
+     * exactly what the screen sees.
+     */
+    private int applyDisplayPass(int postTexId, RenderContext ctx) {
+        exportDisplayFbo.bindForWrite();
+
+        ctx.displayShader.bind();
+        org.lwjgl.opengl.GL13.glActiveTexture(org.lwjgl.opengl.GL13.GL_TEXTURE0);
+        org.lwjgl.opengl.GL11.glBindTexture(org.lwjgl.opengl.GL11.GL_TEXTURE_2D, postTexId);
+        ctx.displayShader.setInt("u_tex",          0);
+        ctx.displayShader.setInt("u_totalSamples", 1);
+        ctx.displayShader.setFloat("u_exposure",   1.0f);
+
+        org.lwjgl.opengl.GL30.glBindVertexArray(ctx.fullscreenVao);
+        org.lwjgl.opengl.GL11.glDrawArrays(org.lwjgl.opengl.GL11.GL_TRIANGLES, 0, 3);
+        org.lwjgl.opengl.GL30.glBindVertexArray(0);
+
+        ctx.displayShader.unbind();
+        exportDisplayFbo.unbind();
+
+        return exportDisplayFbo.textureId();
     }
 
     /**
@@ -263,13 +294,14 @@ public final class RenderPipeline {
         // Temporal state's `time` field drives all time-based shader effects
         // (noise seeds, chroma drift, timebase errors, etc.) so passing the
         // video-mode temporal ensures deterministic per-frame effect progression.
-        lastOutputTexId = ctx.postStack.runOnAccum(
+        int postTexId = ctx.postStack.runOnAccum(
             ctx.renderer.getAccumTexture(),
             ctx.renderer.getGBufferTexture(),
             ctx.renderer.getTotalSamples(),
             ctx.settings.exposure,
             ctx.settings,
             temporal);
+        lastOutputTexId = applyDisplayPass(postTexId, ctx);
     }
 
     // ── Keyframe stub (Phase 2) ───────────────────────────────────────────────

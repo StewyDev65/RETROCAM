@@ -27,6 +27,8 @@ public final class RenderContext {
     public final ThinLensCamera  thinLens;
     public final TemporalState   temporal;
     public final RenderSettings  settings;
+    public final com.retrocam.gl.ShaderProgram displayShader;
+    public final int fullscreenVao;
 
     public RenderContext(Renderer renderer,
                          SPPMManager sppmManager,
@@ -35,7 +37,9 @@ public final class RenderContext {
                          OrbitCamera camera,
                          ThinLensCamera thinLens,
                          TemporalState temporal,
-                         RenderSettings settings) {
+                         RenderSettings settings,
+                         com.retrocam.gl.ShaderProgram displayShader,
+                         int fullscreenVao) {
         this.renderer      = renderer;
         this.sppmManager   = sppmManager;
         this.postStack     = postStack;
@@ -44,5 +48,7 @@ public final class RenderContext {
         this.thinLens      = thinLens;
         this.temporal      = temporal;
         this.settings      = settings;
+        this.displayShader = displayShader;
+        this.fullscreenVao = fullscreenVao;
     }
 }
