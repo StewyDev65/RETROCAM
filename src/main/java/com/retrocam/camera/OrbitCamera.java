@@ -12,7 +12,7 @@ import static org.lwjgl.glfw.GLFW.*;
  *   Scroll wheel       → zoom
  *   W/S                → move target forward / backward
  *   A/D                → move target left / right
- *   Q/E                → move target down / up
+ *   CNTL/SPACE         → move target down / up
  *   R                  → reset to defaults
  *
  * Call {@link #registerCallbacks(long)} once after window creation,
@@ -121,8 +121,8 @@ public final class OrbitCamera {
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
             targetX += right[0] * speed; targetZ += right[2] * speed; moved = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) { targetY -= speed; moved = true; }
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) { targetY += speed; moved = true; }
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) { targetY -= speed; moved = true; }
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) { targetY += speed; moved = true; }
         if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) { reset(); moved = true; }
         if (moved) dirty = true;
 
