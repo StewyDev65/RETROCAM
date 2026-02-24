@@ -1,11 +1,13 @@
 package com.retrocam.scene;
 
+import com.retrocam.keyframe.Keyframeable;
+
 /**
  * Mutable descriptor for a single scene primitive owned by {@link SceneEditor}.
  * Converts to an immutable {@link Primitive} on-demand for BVH/GPU upload.
  * All positional changes are reflected immediately in the next {@link SceneEditor#buildScene()} call.
  */
-public final class SceneObject {
+public final class SceneObject implements Keyframeable {
 
     public enum Type { BOX, SPHERE }
 
@@ -36,6 +38,42 @@ public final class SceneObject {
         this.px = px; this.py = py; this.pz = pz;
         this.sx = sx; this.sy = sy; this.sz = sz;
         this.materialIndex = materialIndex;
+    }
+
+    // ── Keyframeable ──────────────────────────────────────────────────────────
+
+    private static final String[] KF_NAMES = {
+        "pos.x", "pos.y", "pos.z",
+        "scl.x", "scl.y", "scl.z",
+        "rot.x", "rot.y", "rot.z"
+    };
+    private static final String[] KF_DISPLAY = {
+        "Position X", "Position Y", "Position Z",
+        "Scale X",    "Scale Y",    "Scale Z",
+        "Rotation X", "Rotation Y", "Rotation Z"
+    };
+
+    @Override public String[] getKeyframeablePropertyNames()        { return KF_NAMES; }
+    @Override public String[] getKeyframeablePropertyDisplayNames() { return KF_DISPLAY; }
+
+    @Override
+    public float getKeyframeableProperty(String name) {
+        return switch (name) {
+            case "pos.x" -> px; case "pos.y" -> py; case "pos.z" -> pz;
+            case "scl.x" -> sx; case "scl.y" -> sy; case "scl.z" -> sz;
+            case "rot.x" -> rx; case "rot.y" -> ry; case "rot.z" -> rz;
+            default -> 0f;
+        };
+    }
+
+    @Override
+    public void setKeyframeableProperty(String name, float value) {
+        // Note: caller is responsible for marking SceneEditor dirty after mutations.
+        switch (name) {
+            case "pos.x" -> px = value; case "pos.y" -> py = value; case "pos.z" -> pz = value;
+            case "scl.x" -> sx = value; case "scl.y" -> sy = value; case "scl.z" -> sz = value;
+            case "rot.x" -> rx = value; case "rot.y" -> ry = value; case "rot.z" -> rz = value;
+        }
     }
 
     /** Instantiates the corresponding immutable {@link Primitive}. */

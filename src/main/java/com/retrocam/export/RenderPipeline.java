@@ -2,89 +2,68 @@ package com.retrocam.export;
 
 import com.retrocam.core.RenderSettings;
 import com.retrocam.core.TemporalState;
-import com.retrocam.keyframe.KeyframeTimeline;
+import com.retrocam.gl.Framebuffer;
+
+import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL13.*;
+import static org.lwjgl.opengl.GL30.*;
 
 /**
  * Drives render-to-file jobs as a state machine ticked from the main GL loop.
  *
- * <h3>Photo pipeline</h3>
+ * <h3>Photo pipeline (per job)</h3>
  * <ol>
- *   <li>Reset accumulator.</li>
- *   <li>Accumulate {@link RenderJob#samplesPerFrame} path-trace passes.</li>
- *   <li>Run the full post-process stack.</li>
- *   <li>Export the final texture to disk.</li>
+ *   <li>Apply keyframes at t=0 (photo always uses a single time point).</li>
+ *   <li>Reset accumulator. Accumulate {@link RenderJob#samplesPerFrame} passes.</li>
+ *   <li>Run post-process stack, then display shader (ACES + gamma).</li>
+ *   <li>Export texture to disk.</li>
  * </ol>
  *
- * <h3>Video pipeline</h3>
- * <p>For each frame at canonical time {@code t = frameIndex / fps}:</p>
+ * <h3>Video pipeline (per frame)</h3>
  * <ol>
- *   <li>Apply keyframes for time {@code t} (Phase 2 stub — no-op now).</li>
- *   <li>Advance the video-mode {@link TemporalState} by one frame period.</li>
- *   <li>Reset accumulator and SPPM.</li>
- *   <li>Accumulate {@link RenderJob#samplesPerFrame} passes (with SPPM if enabled).</li>
- *   <li>Run the post-process stack — post effects driven by canonical frame time,
- *       ensuring time-based effects (noise seeds, chroma drift, etc.) evolve
- *       deterministically regardless of wall-clock speed.</li>
- *   <li>Write the frame to the temp directory as PNG.</li>
- *   <li>After all frames: run FFmpeg if needed; clean up temp frames.</li>
+ *   <li>Apply keyframes at canonical time {@code t = frameIndex / fps}.</li>
+ *   <li>Re-upload scene if any scene-object keyframes were applied.</li>
+ *   <li>Advance video-mode {@link TemporalState} by one frame period (deterministic).</li>
+ *   <li>Reset accumulator + SPPM. Accumulate {@link RenderJob#samplesPerFrame} passes.</li>
+ *   <li>Run post-process stack + display shader. Write frame PNG to temp directory.</li>
+ *   <li>After all frames: run FFmpeg if required; clean up temp frames.</li>
  * </ol>
- *
- * <h3>Threading</h3>
- * <p>All work happens on the GL thread inside {@link #tick}. Each tick call
- * blocks for the duration of one complete rendered frame. The UI remains
- * responsive between frames (between tick calls), allowing cancellation and
- * title-bar progress updates.</p>
- *
- * <h3>Keyframe stub</h3>
- * <p>{@link #applyKeyframes(float, RenderContext)} is defined but empty in
- * Phase 1. When Phase 2 is implemented, it will sample the job's
- * {@link KeyframeTimeline} and write interpolated values into
- * {@code RenderContext.settings} and the scene objects before each frame is
- * rendered.</p>
  */
 public final class RenderPipeline {
 
-    // ── State ─────────────────────────────────────────────────────────────────
+    // ── State machine ─────────────────────────────────────────────────────────
 
     public enum State { IDLE, RENDERING_PHOTO, RENDERING_VIDEO, FINALIZING, COMPLETE, ERROR, CANCELLED }
 
-    private State  state   = State.IDLE;
-    private RenderJob job  = null;
+    private State     state   = State.IDLE;
+    private RenderJob job     = null;
 
-    // ── Progress tracking ─────────────────────────────────────────────────────
+    // ── Progress ──────────────────────────────────────────────────────────────
     private int    currentFrame  = 0;
     private int    totalFrames   = 1;
     private String statusMessage = "";
     private String errorMessage  = "";
 
-    // ── Output texture ID from the most recent rendered frame ─────────────────
-    private int lastOutputTexId  = -1;
+    // ── GPU resources ─────────────────────────────────────────────────────────
+    private int              lastOutputTexId  = -1;
+    private Framebuffer      exportDisplayFbo = null; // display-pass FBO for export
 
     // ── Per-job workers ───────────────────────────────────────────────────────
-    private FrameExporter frameExporter;
-    private VideoExporter videoExporter;
-
-    private com.retrocam.gl.Framebuffer exportDisplayFbo;
+    private FrameExporter  frameExporter;
+    private VideoExporter  videoExporter;
 
     /**
-     * Dedicated temporal state for video rendering. Evolved deterministically
-     * from frame 0 so that AGC, white-balance drift, and auto-focus tracking
-     * are temporally consistent regardless of wall-clock rendering speed.
+     * Dedicated temporal state for video rendering.
+     * Evolved deterministically from frame 0 using canonical frame time so that
+     * AGC, white-balance drift, and AF tracking are reproducible across re-renders.
      */
     private TemporalState videoTemporal;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * Starts a new render job. Ignored if a job is already running.
-     *
-     * @throws IllegalStateException if a job is already active
-     */
     public void startJob(RenderJob newJob) {
-        if (state != State.IDLE && state != State.COMPLETE
-                && state != State.ERROR && state != State.CANCELLED) {
+        if (isRunning())
             throw new IllegalStateException("A render job is already in progress.");
-        }
 
         this.job          = newJob;
         this.currentFrame = 0;
@@ -94,57 +73,29 @@ public final class RenderPipeline {
 
         this.frameExporter = new FrameExporter(
             RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT);
-
-        exportDisplayFbo = new com.retrocam.gl.Framebuffer(
-            RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT,
-            org.lwjgl.opengl.GL30.GL_RGBA8);
         this.videoExporter = new VideoExporter();
 
+        // Display-pass FBO: RGBA8 matches typical display output
+        if (exportDisplayFbo == null) {
+            exportDisplayFbo = new Framebuffer(
+                RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT, GL_RGBA8);
+        }
+
         if (newJob.format.isVideo) {
-            this.videoTemporal = new TemporalState();
-            this.state         = State.RENDERING_VIDEO;
+            videoTemporal = new TemporalState();
+            state         = State.RENDERING_VIDEO;
         } else {
-            this.videoTemporal = null;
-            this.state         = State.RENDERING_PHOTO;
+            videoTemporal = null;
+            state         = State.RENDERING_PHOTO;
         }
 
         statusMessage = "Starting render…";
-        System.out.println("[RenderPipeline] Job started: " + newJob.format.label
-            + " | " + totalFrames + " frame(s) | " + newJob.samplesPerFrame + " spp");
+        System.out.printf("[RenderPipeline] Job started: %s | %d frame(s) | %d spp%n",
+            newJob.format.label, totalFrames, newJob.samplesPerFrame);
     }
 
-    /**
-     * Runs the post-stack output through the display shader (ACES + gamma)
-     * into an offscreen FBO. Returns that FBO's texture ID — this matches
-     * exactly what the screen sees.
-     */
-    private int applyDisplayPass(int postTexId, RenderContext ctx) {
-        exportDisplayFbo.bindForWrite();
-
-        ctx.displayShader.bind();
-        org.lwjgl.opengl.GL13.glActiveTexture(org.lwjgl.opengl.GL13.GL_TEXTURE0);
-        org.lwjgl.opengl.GL11.glBindTexture(org.lwjgl.opengl.GL11.GL_TEXTURE_2D, postTexId);
-        ctx.displayShader.setInt("u_tex",          0);
-        ctx.displayShader.setInt("u_totalSamples", 1);
-        ctx.displayShader.setFloat("u_exposure",   1.0f);
-
-        org.lwjgl.opengl.GL30.glBindVertexArray(ctx.fullscreenVao);
-        org.lwjgl.opengl.GL11.glDrawArrays(org.lwjgl.opengl.GL11.GL_TRIANGLES, 0, 3);
-        org.lwjgl.opengl.GL30.glBindVertexArray(0);
-
-        ctx.displayShader.unbind();
-        exportDisplayFbo.unbind();
-
-        return exportDisplayFbo.textureId();
-    }
-
-    /**
-     * Cancels the active job. Safe to call when idle.
-     * Any partially-written frames are left on disk.
-     */
     public void cancel() {
-        if (state == State.RENDERING_PHOTO || state == State.RENDERING_VIDEO
-                || state == State.FINALIZING) {
+        if (isRunning()) {
             state         = State.CANCELLED;
             statusMessage = "Cancelled.";
             System.out.println("[RenderPipeline] Job cancelled at frame " + currentFrame);
@@ -152,13 +103,10 @@ public final class RenderPipeline {
     }
 
     /**
-     * Ticks the pipeline by one step (one complete rendered frame for video, or
-     * the full photo render). Must be called from the GL thread each main-loop
-     * iteration while {@link #isRunning()} is true.
+     * Ticks the pipeline by one step (one complete rendered frame for video,
+     * or the full photo render for photo). Must be called from the GL thread
+     * each main-loop iteration while {@link #isRunning()} is true.
      *
-     * @param ctx  live render dependencies
-     * @param wallDt wall-clock delta-time (seconds) — used only for interactive temporal
-     *               updates; the pipeline uses canonical frame time for all video state
      * @return GL texture ID of the last rendered frame (pass to display blit), or -1
      */
     public int tick(RenderContext ctx, float wallDt) {
@@ -169,7 +117,7 @@ public final class RenderPipeline {
                 case RENDERING_PHOTO -> tickPhoto(ctx);
                 case RENDERING_VIDEO -> tickVideoFrame(ctx);
                 case FINALIZING      -> tickFinalize();
-                default              -> { /* no-op */ }
+                default              -> { }
             }
         } catch (Exception e) {
             state         = State.ERROR;
@@ -187,9 +135,7 @@ public final class RenderPipeline {
     private void tickPhoto(RenderContext ctx) {
         statusMessage = "Rendering photo…";
 
-        // Phase 2: applyKeyframes(0f, ctx)
         applyKeyframes(0f, ctx);
-
         accumulateFrame(ctx, ctx.temporal);
 
         String outPath = job.getFullOutputPath();
@@ -209,18 +155,15 @@ public final class RenderPipeline {
         statusMessage = String.format("Rendering frame %d / %d  (t=%.3fs)…",
             currentFrame + 1, totalFrames, canonicalTime);
 
-        // Phase 2: applyKeyframes(canonicalTime, ctx)
         applyKeyframes(canonicalTime, ctx);
 
-        // Advance video-mode temporal state by one canonical frame period.
-        // This evolves AGC, WB drift, and AF tracking deterministically.
+        // Advance video-mode temporal by one canonical frame period
         ctx.settings.focusDistM = ctx.settings.focusDistM; // target unchanged unless keyframed
         videoTemporal.setFocalDistTarget(ctx.settings.focusDistM);
         videoTemporal.updateForVideoFrame(canonicalTime, frameDt, ctx.settings);
 
         accumulateFrame(ctx, videoTemporal);
 
-        // Write frame to temp directory
         String framePath = job.getFramePath(currentFrame);
         frameExporter.exportFrame(lastOutputTexId, framePath, job.jpegQuality);
 
@@ -230,7 +173,6 @@ public final class RenderPipeline {
                 state         = State.FINALIZING;
                 statusMessage = "Encoding video…";
             } else {
-                // Image sequence — done
                 state         = State.COMPLETE;
                 statusMessage = "Done → " + job.getTempFrameDir();
                 System.out.println("[RenderPipeline] Image sequence complete: " + job.getTempFrameDir());
@@ -238,11 +180,9 @@ public final class RenderPipeline {
         }
     }
 
-    // ── State: Finalize (FFmpeg encode) ───────────────────────────────────────
+    // ── State: Finalize ───────────────────────────────────────────────────────
 
     private void tickFinalize() {
-        statusMessage = "Encoding video with FFmpeg…";
-
         try {
             videoExporter.encode(job);
             videoExporter.cleanupTempFrames(job);
@@ -250,8 +190,7 @@ public final class RenderPipeline {
             statusMessage = "Done → " + job.getFullOutputPath();
             System.out.println("[RenderPipeline] Video complete: " + job.getFullOutputPath());
         } catch (VideoExporter.VideoEncodeException e) {
-            // FFmpeg missing or failed — keep image sequence, report as soft warning
-            state         = State.COMPLETE; // treat as success (frames are still there)
+            state         = State.COMPLETE; // image sequence is still present
             statusMessage = "Warning: " + e.getMessage();
             System.err.println("[RenderPipeline] Encode warning: " + e.getMessage());
         }
@@ -259,29 +198,17 @@ public final class RenderPipeline {
 
     // ── Core accumulation ─────────────────────────────────────────────────────
 
-    /**
-     * Resets the accumulator and runs {@link RenderJob#samplesPerFrame} path-trace
-     * passes (plus SPPM if enabled), then runs the post-process stack.
-     * Sets {@link #lastOutputTexId} to the result.
-     *
-     * @param temporal  the temporal state to use for this frame (live or video-mode)
-     */
     private void accumulateFrame(RenderContext ctx, TemporalState temporal) {
         ctx.renderer.reset();
-        if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0) {
+        if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0)
             ctx.sppmManager.reset(ctx.settings);
-        }
 
         for (int i = 0; i < job.samplesPerFrame; i++) {
-            // SPPM photon trace pass
-            if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0) {
+            if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0)
                 ctx.sppmManager.tracePhotons(ctx.sceneUploader, ctx.settings);
-            }
 
-            // Path trace accumulation
             ctx.renderer.render(ctx.sceneUploader, ctx.camera, ctx.thinLens, temporal, ctx.settings);
 
-            // SPPM gather + radius update
             if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0) {
                 ctx.sppmManager.gatherRadiance(
                     ctx.sceneUploader, ctx.camera,
@@ -290,10 +217,7 @@ public final class RenderPipeline {
             }
         }
 
-        // Run the post-process chain.
-        // Temporal state's `time` field drives all time-based shader effects
-        // (noise seeds, chroma drift, timebase errors, etc.) so passing the
-        // video-mode temporal ensures deterministic per-frame effect progression.
+        // Post-process chain
         int postTexId = ctx.postStack.runOnAccum(
             ctx.renderer.getAccumTexture(),
             ctx.renderer.getGBufferTexture(),
@@ -301,28 +225,58 @@ public final class RenderPipeline {
             ctx.settings.exposure,
             ctx.settings,
             temporal);
+
+        // Apply display shader (ACES + gamma) so exported pixel values match screen
         lastOutputTexId = applyDisplayPass(postTexId, ctx);
     }
 
-    // ── Keyframe stub (Phase 2) ───────────────────────────────────────────────
+    // ── Display pass ──────────────────────────────────────────────────────────
 
     /**
-     * Applies keyframe-interpolated values to the render context for the given time.
+     * Blits the post-stack result through the display shader (ACES + gamma)
+     * into an offscreen FBO. The exported image then matches the screen exactly.
+     */
+    private int applyDisplayPass(int postTexId, RenderContext ctx) {
+        exportDisplayFbo.bindForWrite(); // also sets viewport to RENDER_WIDTH x RENDER_HEIGHT
+
+        ctx.displayShader.bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, postTexId);
+        ctx.displayShader.setInt("u_tex",          0);
+        ctx.displayShader.setInt("u_totalSamples", 1);
+        ctx.displayShader.setFloat("u_exposure",   1.0f);
+
+        glBindVertexArray(ctx.fullscreenVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+
+        ctx.displayShader.unbind();
+        exportDisplayFbo.unbind();
+
+        return exportDisplayFbo.textureId();
+    }
+
+    // ── Keyframe application ──────────────────────────────────────────────────
+
+    /**
+     * Applies all keyframe tracks at {@code time} and re-uploads the scene
+     * if any scene-object tracks were mutated.
      *
-     * <p><b>Phase 1 stub</b> — currently a no-op. When Phase 2 is implemented:</p>
-     * <ul>
-     *   <li>Sample {@link RenderJob#keyframeTimeline} at {@code time}.</li>
-     *   <li>Write interpolated camera parameters to {@code ctx.settings} and
-     *       {@code ctx.camera} (position, FOV, aperture, focus distance, etc.).</li>
-     *   <li>Write interpolated object transforms to the scene objects in
-     *       {@code ctx.sceneUploader}, then re-upload the scene.</li>
-     * </ul>
-     *
-     * @param time canonical frame time in seconds
-     * @param ctx  render context whose settings/scene will be mutated
+     * Camera changes set {@code camera.dirty = true} automatically via
+     * {@link com.retrocam.camera.OrbitCamera#setKeyframeableProperty}.
+     * Settings changes take effect immediately since they are read each pass.
      */
     private void applyKeyframes(float time, RenderContext ctx) {
-        // TODO Phase 2: if (job.keyframeTimeline != null) job.keyframeTimeline.apply(time, ctx);
+        if (job.keyframeTimeline == null) return;
+
+        job.keyframeTimeline.apply(time);
+
+        // Scene-object mutations require a GPU re-upload before accumulation
+        if (job.keyframeTimeline.hasSceneObjectTracks()) {
+            ctx.sceneEditor.markDirty();
+            ctx.sceneUploader.upload(ctx.sceneEditor.buildScene());
+            ctx.sceneEditor.clearDirty();
+        }
     }
 
     // ── Queries ───────────────────────────────────────────────────────────────
@@ -334,16 +288,11 @@ public final class RenderPipeline {
     }
 
     public boolean isIdle() {
-        return state == State.IDLE || state == State.COMPLETE
+        return state == State.IDLE  || state == State.COMPLETE
             || state == State.ERROR || state == State.CANCELLED;
     }
 
-    /** Returns 0.0–1.0 indicating overall job progress. */
-    public float getProgress() {
-        if (totalFrames <= 0) return 0f;
-        return (float) currentFrame / totalFrames;
-    }
-
+    public float  getProgress()       { return totalFrames <= 0 ? 0f : (float) currentFrame / totalFrames; }
     public int    getCurrentFrame()   { return currentFrame; }
     public int    getTotalFrames()    { return totalFrames; }
     public String getStatusMessage()  { return statusMessage; }
@@ -351,14 +300,20 @@ public final class RenderPipeline {
     public State  getState()          { return state; }
     public int    getLastOutputTexId(){ return lastOutputTexId; }
 
-    /** Resets to IDLE so a new job can be started. */
     public void reset() {
-        state         = State.IDLE;
-        job           = null;
-        currentFrame  = 0;
-        totalFrames   = 1;
-        statusMessage = "";
-        errorMessage  = "";
+        state           = State.IDLE;
+        job             = null;
+        currentFrame    = 0;
+        totalFrames     = 1;
+        statusMessage   = "";
+        errorMessage    = "";
         lastOutputTexId = -1;
+    }
+
+    public void destroy() {
+        if (exportDisplayFbo != null) {
+            exportDisplayFbo.destroy();
+            exportDisplayFbo = null;
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.retrocam.camera;
 
 import static org.lwjgl.glfw.GLFW.*;
+import com.retrocam.keyframe.Keyframeable;
 
 /**
  * Orbit (turntable) camera for interactive scene preview.
@@ -20,7 +21,7 @@ import static org.lwjgl.glfw.GLFW.*;
  * Matrices are provided via {@link #getViewMatrix()} and
  * {@link #getProjectionMatrix(float)}.
  */
-public final class OrbitCamera {
+public final class OrbitCamera implements Keyframeable {
 
     // ── State ─────────────────────────────────────────────────────────────────
     private float theta   = (float)(Math.PI / 2.0); // face along -Z into the scene
@@ -182,6 +183,47 @@ public final class OrbitCamera {
 
     public boolean isDirty()  { return dirty; }
     public void clearDirty()  { dirty = false; }
+
+    // ── Keyframeable ──────────────────────────────────────────────────────────
+
+    private static final String[] KF_NAMES = {
+        "cam.theta", "cam.phi", "cam.radius",
+        "cam.targetX", "cam.targetY", "cam.targetZ", "cam.fovY"
+    };
+    private static final String[] KF_DISPLAY = {
+        "Orbit Angle (θ)", "Elevation (φ)", "Distance",
+        "Target X", "Target Y", "Target Z", "Field of View"
+    };
+
+    @Override public String[] getKeyframeablePropertyNames()        { return KF_NAMES; }
+    @Override public String[] getKeyframeablePropertyDisplayNames() { return KF_DISPLAY; }
+
+    @Override
+    public float getKeyframeableProperty(String name) {
+        return switch (name) {
+            case "cam.theta"   -> theta;
+            case "cam.phi"     -> phi;
+            case "cam.radius"  -> radius;
+            case "cam.targetX" -> targetX;
+            case "cam.targetY" -> targetY;
+            case "cam.targetZ" -> targetZ;
+            case "cam.fovY"    -> fovY;
+            default -> 0f;
+        };
+    }
+
+    @Override
+    public void setKeyframeableProperty(String name, float value) {
+        switch (name) {
+            case "cam.theta"   -> { theta   = value; dirty = true; }
+            case "cam.phi"     -> { phi     = Math.max(0.02f, Math.min((float)Math.PI - 0.02f, value)); dirty = true; }
+            case "cam.radius"  -> { radius  = Math.max(0.5f, value); dirty = true; }
+            case "cam.targetX" -> { targetX = value; dirty = true; }
+            case "cam.targetY" -> { targetY = value; dirty = true; }
+            case "cam.targetZ" -> { targetZ = value; dirty = true; }
+            case "cam.fovY"    -> { fovY    = Math.max(5f, Math.min(150f, value)); dirty = true; }
+        }
+    }
 
     // ── Internals ─────────────────────────────────────────────────────────────
 

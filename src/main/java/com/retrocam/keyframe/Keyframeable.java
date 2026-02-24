@@ -1,54 +1,40 @@
 package com.retrocam.keyframe;
 
 /**
- * Marker interface for scene parameters that can be animated via keyframes.
+ * Implemented by any object whose float properties can be animated over time.
  *
- * <p><b>Phase 2 stub.</b> When implemented, objects implementing this interface
- * expose named, animatable properties that the keyframe editor can add tracks for.
- * The {@link KeyframeTimeline} queries these properties by name and writes
- * interpolated values back at each frame during video rendering.</p>
+ * Two parallel arrays of equal length are exposed:
+ *   {@link #getKeyframeablePropertyNames()} — stable string keys (used internally)
+ *   {@link #getKeyframeablePropertyDisplayNames()} — human-readable labels (used in UI)
  *
- * <h3>Planned animatable properties</h3>
- * <ul>
- *   <li><b>Camera:</b> position (orbit: yaw, pitch, radius), focal length,
- *       aperture f-stop, focus distance</li>
- *   <li><b>Scene objects:</b> translation (x, y, z), uniform scale, rotation
- *       (Euler angles)</li>
- *   <li><b>Post-process values:</b> any float parameter exposed in
- *       {@link com.retrocam.core.RenderSettings}</li>
- * </ul>
- *
- * <pre>
- * // TODO Phase 2 example usage:
- * public class OrbitCamera implements Keyframeable {
- *     public Map<String, Float> getKeyframeableProperties() { ... }
- *     public void setKeyframeableProperty(String name, float value) { ... }
- * }
- * </pre>
+ * Implementors: {@link com.retrocam.camera.OrbitCamera},
+ *               {@link com.retrocam.scene.SceneObject},
+ *               {@link com.retrocam.core.RenderSettings}
  */
 public interface Keyframeable {
 
     /**
-     * Returns an array of property names this object exposes for keyframing.
-     * Names must be stable identifiers (used as keys in the timeline tracks).
-     *
-     * TODO Phase 2: implement in OrbitCamera, SceneObject, and RenderSettings.
+     * Stable internal keys for each animatable property.
+     * These are used as map keys in {@link KeyframeTrack} and must never change.
      */
     String[] getKeyframeablePropertyNames();
 
     /**
+     * Human-readable labels shown in the Keyframe Editor UI.
+     * Must be the same length and order as {@link #getKeyframeablePropertyNames()}.
+     */
+    String[] getKeyframeablePropertyDisplayNames();
+
+    /**
      * Returns the current value of the named property.
-     *
-     * TODO Phase 2: implement in each Keyframeable class.
+     * Called when capturing a keyframe from the live scene.
      */
     float getKeyframeableProperty(String name);
 
     /**
-     * Sets the named property to the given interpolated value.
-     * Called by {@link KeyframeTimeline#apply(float, com.retrocam.export.RenderContext)}
-     * for each active track at each video frame.
-     *
-     * TODO Phase 2: implement in each Keyframeable class.
+     * Writes an interpolated value back to the named property.
+     * Called by {@link KeyframeTimeline#apply(float)} on each video frame.
+     * Implementors should set their dirty flag if applicable (e.g. OrbitCamera).
      */
     void setKeyframeableProperty(String name, float value);
 }

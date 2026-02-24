@@ -1,36 +1,33 @@
 package com.retrocam.keyframe;
 
-import com.retrocam.export.RenderContext;
-
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Manages all {@link KeyframeTrack}s for a single render job.
+ * Manages all {@link KeyframeTrack}s for a single render job or live preview session.
  *
- * <p><b>Phase 2 stub.</b> The timeline is constructed by the keyframe editor
- * UI and attached to a {@link com.retrocam.export.RenderJob} before the job
- * is started. During rendering, {@link RenderPipeline} calls
- * {@link #apply(float, RenderContext)} once per frame before accumulation begins.</p>
+ * <h3>Usage in rendering</h3>
+ * <p>{@link com.retrocam.export.RenderPipeline} calls {@link #apply(float)} once per
+ * video frame before accumulation begins. Each track writes its interpolated value
+ * back to its target object. The pipeline then checks {@link #hasSceneObjectTracks()}
+ * to determine whether the scene needs to be re-uploaded.</p>
  *
- * <h3>Planned Phase 2 workflow</h3>
- * <ol>
- *   <li>User opens the Keyframe Editor panel in ImGui.</li>
- *   <li>User selects a target object (camera, scene object, or settings)
- *       and a property name.</li>
- *   <li>User scrubs to a time and clicks "Add Keyframe" — creates a
- *       {@link KeyframeTrack.Keyframe} with the current property value.</li>
- *   <li>On render start, the timeline is attached to the job via
- *       {@link com.retrocam.export.RenderJob.Builder#keyframeTimeline} (stub).</li>
- *   <li>Each video frame, {@link #apply} is called to interpolate and write
- *       all track values into the render context.</li>
- * </ol>
+ * <h3>Usage in live preview</h3>
+ * <p>{@link com.retrocam.core.ImGuiLayer} calls {@link #apply(float)} when the
+ * scrub slider changes and preview is enabled, then checks the same flag to mark
+ * {@link com.retrocam.scene.SceneEditor} dirty for the main loop to re-upload.</p>
+ *
+ * <h3>Track uniqueness</h3>
+ * <p>Only one track may exist per (target, property) pair. {@link #addTrack} enforces
+ * this — attempting to add a duplicate returns the existing track.</p>
  */
 public final class KeyframeTimeline {
 
+    /** Total duration this timeline covers — should match the render job's durationSeconds. */
+    public float durationSeconds;
+
     private final List<KeyframeTrack> tracks = new ArrayList<>();
-    /** Total duration this timeline covers (matches {@link com.retrocam.export.RenderJob#durationSeconds}). */
-    public final float durationSeconds;
 
     public KeyframeTimeline(float durationSeconds) {
         this.durationSeconds = durationSeconds;
@@ -38,36 +35,81 @@ public final class KeyframeTimeline {
 
     // ── Track management ──────────────────────────────────────────────────────
 
-    public void addTrack(KeyframeTrack track) {
+    /**
+     * Adds a track and returns it. If a track for the same (target, property) already
+     * exists, the existing track is returned without creating a duplicate.
+     */
+    public KeyframeTrack addTrack(Keyframeable target, String propertyName,
+                                  KeyframeTarget.Type targetType) {
+        for (KeyframeTrack t : tracks) {
+            if (t.target == target && t.propertyName.equals(propertyName))
+                return t; // already exists
+        }
+        KeyframeTrack track = new KeyframeTrack(target, propertyName, targetType);
         tracks.add(track);
+        return track;
     }
 
     public void removeTrack(KeyframeTrack track) {
         tracks.remove(track);
     }
 
-    public List<KeyframeTrack> getTracks() {
-        return List.copyOf(tracks);
+    public void removeTrackAt(int index) {
+        if (index >= 0 && index < tracks.size())
+            tracks.remove(index);
     }
 
-    // ── Evaluation ───────────────────────────────────────────────────────────
+    public List<KeyframeTrack> getTracks() {
+        return Collections.unmodifiableList(tracks);
+    }
+
+    public int trackCount() { return tracks.size(); }
+
+    // ── Evaluation ────────────────────────────────────────────────────────────
 
     /**
-     * Applies all track values at the given canonical time to the render context.
+     * Evaluates all tracks at {@code time} and applies the interpolated values
+     * to their respective target objects.
      *
-     * <p><b>Phase 1:</b> Currently a no-op — no tracks exist and {@link RenderPipeline}
-     * only calls this when {@link com.retrocam.export.RenderJob#keyframeTimeline}
-     * is non-null (which never happens in Phase 1).</p>
+     * <p>After this call, callers should check {@link #hasSceneObjectTracks()} and
+     * if true, mark the {@link com.retrocam.scene.SceneEditor} dirty so the GPU
+     * scene is re-uploaded before the next frame is rendered.</p>
      *
-     * <p><b>TODO Phase 2:</b> iterate tracks and call
-     * {@link KeyframeTrack#applyToTarget(float)} for each. For camera position /
-     * settings changes, also mark accumulators dirty so samples are not corrupted
-     * by mid-render parameter changes.</p>
-     *
-     * @param time canonical frame time in seconds
-     * @param ctx  render context whose state will be mutated by track evaluation
+     * @param time canonical time in seconds, clamped to the defined keyframe range per-track
      */
-    public void apply(float time, RenderContext ctx) {
-        // TODO Phase 2: for (KeyframeTrack track : tracks) track.applyToTarget(time);
+    public void apply(float time) {
+        for (KeyframeTrack track : tracks) {
+            track.applyToTarget(time);
+        }
+    }
+
+    // ── Queries ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns true if any track targets a {@link com.retrocam.scene.SceneObject}.
+     * When true, callers must re-upload the scene after calling {@link #apply}.
+     */
+    public boolean hasSceneObjectTracks() {
+        for (KeyframeTrack t : tracks)
+            if (t.targetType == KeyframeTarget.Type.SCENE_OBJECT) return true;
+        return false;
+    }
+
+    /** Returns true if any tracks have been defined and contain at least one keyframe. */
+    public boolean isEmpty() {
+        if (tracks.isEmpty()) return true;
+        for (KeyframeTrack t : tracks)
+            if (t.keyframeCount() > 0) return false;
+        return true;
+    }
+
+    /**
+     * Finds the track for a given target + property, or null if none exists.
+     * Useful for the UI to highlight which properties already have tracks.
+     */
+    public KeyframeTrack findTrack(Keyframeable target, String propertyName) {
+        for (KeyframeTrack t : tracks)
+            if (t.target == target && t.propertyName.equals(propertyName)) return t;
+        return null;
     }
 }

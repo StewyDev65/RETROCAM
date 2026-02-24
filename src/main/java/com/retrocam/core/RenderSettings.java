@@ -1,5 +1,7 @@
 package com.retrocam.core;
 
+import com.retrocam.keyframe.Keyframeable;
+
 /**
  * Centralised, mutable settings bean.
  * Every configurable constant from the spec lives here so the ImGui
@@ -8,7 +10,7 @@ package com.retrocam.core;
  * New fields are added here and exposed in ImGuiLayer as each phase
  * of the renderer is implemented.
  */
-public final class RenderSettings {
+public final class RenderSettings implements Keyframeable {
 
     // ── Window / display ──────────────────────────────────────────────────────
     public boolean vSync          = true;
@@ -188,12 +190,54 @@ public final class RenderSettings {
     public float interlaceCombEdgeThresh = 0.04f;
     public float interlaceLineWeighting  = 0.05f;
 
-    // ── Render Export (Phase file-render) ────────────────────────────────────────
-    public String exportOutputPath     = "output";
-    public int    exportFormatIndex    = 0;         // index into RenderFormat.values()
+    // ── Render Export ─────────────────────────────────────────────────────────────
+    public String exportOutputPath      = "output";
+    public int    exportFormatIndex     = 0;
     public int    exportSamplesPerFrame = 128;
-    public int    exportJpegQuality    = 90;
-    // Video-only
-    public float  exportDurationSec    = 5.0f;
-    public float  exportFps            = 29.97f;
+    public int    exportJpegQuality     = 90;
+    public float  exportDurationSec     = 5.0f;
+    public float  exportFps             = 29.97f;
+
+    // ── Keyframeable ──────────────────────────────────────────────────────────────
+
+    private static final String[] KF_NAMES = {
+        "lens.focalLength", "lens.aperture", "lens.focusDist", "lens.saStrength",
+        "post.exposure", "post.saturation", "post.colorTemp", "post.tapeAge"
+    };
+    private static final String[] KF_DISPLAY = {
+        "Focal Length (mm)", "Aperture (f/stop)", "Focus Distance (m)", "Spherical Aberration",
+        "Exposure", "Saturation", "Color Temp Bias", "Tape Age"
+    };
+
+    @Override public String[] getKeyframeablePropertyNames()        { return KF_NAMES; }
+    @Override public String[] getKeyframeablePropertyDisplayNames() { return KF_DISPLAY; }
+
+    @Override
+    public float getKeyframeableProperty(String name) {
+        return switch (name) {
+            case "lens.focalLength" -> focalLengthMm;
+            case "lens.aperture"    -> apertureFStop;
+            case "lens.focusDist"   -> focusDistM;
+            case "lens.saStrength"  -> saStrength;
+            case "post.exposure"    -> exposure;
+            case "post.saturation"  -> colorSaturation;
+            case "post.colorTemp"   -> colorTempBias;
+            case "post.tapeAge"     -> tapeAge;
+            default -> 0f;
+        };
+    }
+
+    @Override
+    public void setKeyframeableProperty(String name, float value) {
+        switch (name) {
+            case "lens.focalLength" -> focalLengthMm   = Math.max(1f, value);
+            case "lens.aperture"    -> apertureFStop    = Math.max(0.7f, value);
+            case "lens.focusDist"   -> focusDistM       = Math.max(0.1f, value);
+            case "lens.saStrength"  -> saStrength       = value;
+            case "post.exposure"    -> exposure         = Math.max(0f, value);
+            case "post.saturation"  -> colorSaturation  = Math.max(0f, value);
+            case "post.colorTemp"   -> colorTempBias    = value;
+            case "post.tapeAge"     -> tapeAge          = Math.max(0f, Math.min(1f, value));
+        }
+    }
 }

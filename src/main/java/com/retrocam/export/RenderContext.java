@@ -5,7 +5,9 @@ import com.retrocam.camera.ThinLensCamera;
 import com.retrocam.core.Renderer;
 import com.retrocam.core.RenderSettings;
 import com.retrocam.core.TemporalState;
+import com.retrocam.gl.ShaderProgram;
 import com.retrocam.post.PostProcessStack;
+import com.retrocam.scene.SceneEditor;
 import com.retrocam.scene.SceneUploader;
 import com.retrocam.scene.SPPMManager;
 
@@ -19,31 +21,34 @@ import com.retrocam.scene.SPPMManager;
  */
 public final class RenderContext {
 
-    public final Renderer        renderer;
-    public final SPPMManager     sppmManager;
+    public final Renderer         renderer;
+    public final SPPMManager      sppmManager;
     public final PostProcessStack postStack;
-    public final SceneUploader   sceneUploader;
-    public final OrbitCamera     camera;
-    public final ThinLensCamera  thinLens;
-    public final TemporalState   temporal;
-    public final RenderSettings  settings;
-    public final com.retrocam.gl.ShaderProgram displayShader;
-    public final int fullscreenVao;
+    public final SceneUploader    sceneUploader;
+    public final SceneEditor      sceneEditor;    // needed for keyframe scene re-upload
+    public final OrbitCamera      camera;
+    public final ThinLensCamera   thinLens;
+    public final TemporalState    temporal;
+    public final RenderSettings   settings;
+    public final ShaderProgram    displayShader;  // ACES + gamma pass for export
+    public final int              fullscreenVao;
 
     public RenderContext(Renderer renderer,
                          SPPMManager sppmManager,
                          PostProcessStack postStack,
                          SceneUploader sceneUploader,
+                         SceneEditor sceneEditor,
                          OrbitCamera camera,
                          ThinLensCamera thinLens,
                          TemporalState temporal,
                          RenderSettings settings,
-                         com.retrocam.gl.ShaderProgram displayShader,
+                         ShaderProgram displayShader,
                          int fullscreenVao) {
         this.renderer      = renderer;
         this.sppmManager   = sppmManager;
         this.postStack     = postStack;
         this.sceneUploader = sceneUploader;
+        this.sceneEditor   = sceneEditor;
         this.camera        = camera;
         this.thinLens      = thinLens;
         this.temporal      = temporal;

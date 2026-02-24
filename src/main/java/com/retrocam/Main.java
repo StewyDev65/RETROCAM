@@ -170,18 +170,19 @@ public final class Main {
         staticImageLoader = new StaticImageLoader();
         displayShader     = ShaderProgram.createRender(
             "/shaders/fullscreen.vert", "/shaders/display.frag");
-        renderPipeline = new com.retrocam.export.RenderPipeline();
     }
 
     private void initImGui() {
         imGui = new ImGuiLayer();
         imGui.init(window);
-        // Build once so pipeline has all dependencies wired before any tick
+
         renderContext = new com.retrocam.export.RenderContext(
-            renderer, sppmManager, postStack, sceneUploader,
-            camera, thinLens, temporal, settings,
-            displayShader, fullscreenVao);
+            renderer, sppmManager, postStack, sceneUploader, sceneEditor,
+            camera, thinLens, temporal, settings, displayShader, fullscreenVao);
+
+        renderPipeline = new com.retrocam.export.RenderPipeline();
         imGui.setRenderPipeline(renderPipeline);
+        imGui.setCamera(camera);
     }
 
     // ── Loop ──────────────────────────────────────────────────────────────────
@@ -197,6 +198,16 @@ public final class Main {
 
             // Re-upload scene when the editor marks geometry or materials dirty
             if (sceneEditor.isDirty()) {
+                sceneUploader.upload(sceneEditor.buildScene());
+                renderer.reset();
+                sppmManager.reset(settings);
+                camera.clearDirty();
+                snapshotSettings();
+                sceneEditor.clearDirty();
+            }
+
+            // Keyframe preview: if the editor scrubbed and applied track values to the scene
+            if (imGui.pollKeyframePreviewDirty() && sceneEditor.isDirty()) {
                 sceneUploader.upload(sceneEditor.buildScene());
                 renderer.reset();
                 sppmManager.reset(settings);
@@ -385,6 +396,7 @@ public final class Main {
         glfwSetErrorCallback(null).free();
 
         renderPipeline.cancel();
+        renderPipeline.destroy();
 
         System.out.println("[RetroCam] Shutdown clean.");
     }

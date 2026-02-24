@@ -65,6 +65,23 @@ public final class ImGuiLayer {
     private static final String[] RENDER_FORMAT_LABELS =
         com.retrocam.export.RenderFormat.labels();
 
+    // ── Keyframe editor state ──────────────────────────────────────────────────
+    private com.retrocam.camera.OrbitCamera camera;          // for target list + preview
+    private com.retrocam.core.RenderSettings currentSettings; // captured each renderMainPanel call
+    private com.retrocam.keyframe.KeyframeTimeline kfTimeline
+        = new com.retrocam.keyframe.KeyframeTimeline(5.0f);
+    private float   kfScrubTime          = 0f;
+    private boolean kfPreviewEnabled     = false;
+    private boolean kfScrubChanged       = false;
+    private int     kfSelectedTargetIdx  = 0;
+    private int     kfSelectedPropIdx    = 0;
+    private int     kfSelectedTrackIdx   = -1;
+    private final imgui.type.ImInt kfTargetCombo   = new imgui.type.ImInt();
+    private final imgui.type.ImInt kfPropCombo     = new imgui.type.ImInt();
+    private final imgui.type.ImInt kfInterpCombo   = new imgui.type.ImInt();
+    private final imgui.type.ImFloat kfTimeEdit    = new imgui.type.ImFloat();
+    private final imgui.type.ImFloat kfValueEdit   = new imgui.type.ImFloat();
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     public void init(long windowHandle) {
@@ -77,6 +94,17 @@ public final class ImGuiLayer {
 
     public void setRenderPipeline(com.retrocam.export.RenderPipeline pipeline) {
         this.renderPipeline = pipeline;
+    }
+
+    public void setCamera(com.retrocam.camera.OrbitCamera camera) {
+        this.camera = camera;
+    }
+
+    /** Returns true (and clears the flag) if keyframe preview caused a scene change this frame. */
+    public boolean pollKeyframePreviewDirty() {
+        boolean v = kfScrubChanged && kfPreviewEnabled;
+        kfScrubChanged = false;
+        return v;
     }
 
     public void destroy() {
@@ -150,6 +178,9 @@ public final class ImGuiLayer {
 
         if (renderPipeline != null)
             renderExportSection(s);
+
+        this.currentSettings = s;
+        renderKeyframeEditor(s, editor);
 
         if (editor != null)
             renderSceneEditor(editor);
@@ -316,9 +347,9 @@ public final class ImGuiLayer {
 
     private void startRenderJob(RenderSettings s) {
         try {
-            exportOutputPath.set(s.exportOutputPath);
             com.retrocam.export.RenderFormat fmt =
                 com.retrocam.export.RenderFormat.values()[s.exportFormatIndex];
+            kfTimeline.durationSeconds = s.exportDurationSec; // keep in sync
             com.retrocam.export.RenderJob job = com.retrocam.export.RenderJob.builder()
                 .outputPath(s.exportOutputPath)
                 .format(fmt)
@@ -326,13 +357,13 @@ public final class ImGuiLayer {
                 .jpegQuality(s.exportJpegQuality)
                 .durationSeconds(s.exportDurationSec)
                 .fps(s.exportFps)
+                .keyframeTimeline(kfTimeline.isEmpty() ? null : kfTimeline)
                 .build();
             renderPipeline.startJob(job);
         } catch (Exception e) {
             showStatus("Render error: " + e.getMessage());
         }
     }
-
     /** Very rough estimate: assumes ~0.5s per sample per frame on a mid-range GPU. */
     private float estimateRenderMinutes(int totalFrames, int spp) {
         return (totalFrames * spp * 0.5f) / 60f;
@@ -928,6 +959,282 @@ public final class ImGuiLayer {
             if (ImGui.button("Remove Material##mat")) {
                 editor.removeMaterial(idx);
                 selectedMaterialIdx = Math.min(idx, editor.materialCount() - 1);
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // Keyframe Editor
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private void renderKeyframeEditor(RenderSettings s, SceneEditor sceneEditor) {
+        if (!ImGui.collapsingHeader("Keyframe Editor")) return;
+
+        float duration = s.exportDurationSec;
+        kfTimeline.durationSeconds = duration;
+
+        // ── Scrub bar ─────────────────────────────────────────────────────────
+        ImGui.textDisabled("Scrub");
+        ImGui.sameLine();
+        floatBuf[0] = kfScrubTime;
+        ImGui.setNextItemWidth(-80);
+        if (ImGui.sliderFloat("##kfScrub", floatBuf, 0f, duration)) {
+            kfScrubTime    = floatBuf[0];
+            kfScrubChanged = true;
+        }
+        ImGui.sameLine();
+        ImGui.text(String.format("%.2fs", kfScrubTime));
+
+        boolBuf.set(kfPreviewEnabled);
+        if (ImGui.checkbox("Preview##kfPreview", boolBuf))
+            kfPreviewEnabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textDisabled("(applies tracks to live scene)");
+
+        // Capture current value of every existing track at scrub time in one click
+        if (!kfTimeline.isEmpty()) {
+            if (ImGui.button("KF All##kfAll")) {
+                for (com.retrocam.keyframe.KeyframeTrack t : kfTimeline.getTracks()) {
+                    float curVal = t.target.getKeyframeableProperty(t.propertyName);
+                    t.addKeyframe(kfScrubTime, curVal,
+                        com.retrocam.keyframe.KeyframeTrack.Interpolation.LINEAR);
+                }
+            }
+            if (ImGui.isItemHovered())
+                ImGui.setTooltip("Add a keyframe at the current scrub time for every track, capturing each property's live value.");
+        }
+
+        // Apply preview if scrub changed and preview is on
+        if (kfScrubChanged && kfPreviewEnabled) {
+            kfTimeline.apply(kfScrubTime);
+            if (kfTimeline.hasSceneObjectTracks() && sceneEditor != null)
+                sceneEditor.markDirty();
+        }
+
+        ImGui.separator();
+
+        // ── Build target list ─────────────────────────────────────────────────
+        java.util.List<com.retrocam.keyframe.KeyframeTarget> targets = new java.util.ArrayList<>();
+        if (camera != null)
+            targets.add(new com.retrocam.keyframe.KeyframeTarget(
+                "Camera", com.retrocam.keyframe.KeyframeTarget.Type.CAMERA, camera));
+        if (sceneEditor != null) {
+            for (com.retrocam.scene.SceneObject obj : sceneEditor.getObjects())
+                targets.add(new com.retrocam.keyframe.KeyframeTarget(
+                    obj.name, com.retrocam.keyframe.KeyframeTarget.Type.SCENE_OBJECT, obj));
+        }
+        if (s != null)
+            targets.add(new com.retrocam.keyframe.KeyframeTarget(
+                "Render Settings", com.retrocam.keyframe.KeyframeTarget.Type.RENDER_SETTINGS, s));
+
+        if (targets.isEmpty()) {
+            ImGui.textDisabled("No keyframeable targets found.");
+            return;
+        }
+
+        // Clamp selection
+        if (kfSelectedTargetIdx >= targets.size()) kfSelectedTargetIdx = 0;
+
+        // ── Target + property combo ───────────────────────────────────────────
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "Add Track");
+
+        String[] targetNames = targets.stream()
+            .map(t -> t.displayName).toArray(String[]::new);
+        kfTargetCombo.set(kfSelectedTargetIdx);
+        ImGui.setNextItemWidth(160);
+        if (ImGui.combo("Target##kfTgt", kfTargetCombo, targetNames)) {
+            kfSelectedTargetIdx = kfTargetCombo.get();
+            kfSelectedPropIdx   = 0;
+        }
+
+        ImGui.sameLine();
+
+        com.retrocam.keyframe.KeyframeTarget selTarget = targets.get(kfSelectedTargetIdx);
+        String[] propNames    = selTarget.target.getKeyframeablePropertyNames();
+        String[] propDisplay  = selTarget.target.getKeyframeablePropertyDisplayNames();
+        if (kfSelectedPropIdx >= propNames.length) kfSelectedPropIdx = 0;
+
+        kfPropCombo.set(kfSelectedPropIdx);
+        ImGui.setNextItemWidth(160);
+        if (ImGui.combo("Property##kfProp", kfPropCombo, propDisplay))
+            kfSelectedPropIdx = kfPropCombo.get();
+
+        String selectedPropName = propNames[kfSelectedPropIdx];
+        boolean trackExists = kfTimeline.findTrack(selTarget.target, selectedPropName) != null;
+
+        ImGui.spacing();
+
+        // Single property
+        if (!trackExists) {
+            if (ImGui.button("+ Add Track##kfAddTrack")) {
+                com.retrocam.keyframe.KeyframeTrack newTrack =
+                    kfTimeline.addTrack(selTarget.target, selectedPropName, selTarget.type);
+                float curVal = selTarget.target.getKeyframeableProperty(selectedPropName);
+                newTrack.addKeyframe(0f, curVal, com.retrocam.keyframe.KeyframeTrack.Interpolation.LINEAR);
+                kfSelectedTrackIdx = kfTimeline.trackCount() - 1;
+            }
+            ImGui.sameLine();
+        } else {
+            ImGui.textColored(0.5f, 1f, 0.5f, 1f, "(track exists)");
+            ImGui.sameLine();
+        }
+
+        // Track all properties for this target at once
+        if (ImGui.button("+ Track All Properties##kfTrackAll")) {
+            String[] allNames = selTarget.target.getKeyframeablePropertyNames();
+            for (String propKey : allNames) {
+                com.retrocam.keyframe.KeyframeTrack t =
+                    kfTimeline.addTrack(selTarget.target, propKey, selTarget.type);
+                float curVal = selTarget.target.getKeyframeableProperty(propKey);
+                t.addKeyframe(0f, curVal, com.retrocam.keyframe.KeyframeTrack.Interpolation.LINEAR);
+            }
+            kfSelectedTrackIdx = kfTimeline.trackCount() - 1;
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+
+        // ── Track list ────────────────────────────────────────────────────────
+        java.util.List<com.retrocam.keyframe.KeyframeTrack> tracks = kfTimeline.getTracks();
+        if (tracks.isEmpty()) {
+            ImGui.textDisabled("No tracks yet. Add a track above.");
+        } else {
+            ImGui.textColored(0.8f, 0.8f, 0.4f, 1f,
+                String.format("Tracks (%d)", tracks.size()));
+
+            // Find display name for each track's target
+            for (int ti = 0; ti < tracks.size(); ti++) {
+                com.retrocam.keyframe.KeyframeTrack track = tracks.get(ti);
+
+                // Find display name for this track's target
+                String tgtName = "Unknown";
+                String propDisp = track.propertyName;
+                for (com.retrocam.keyframe.KeyframeTarget t : targets) {
+                    if (t.target == track.target) {
+                        tgtName = t.displayName;
+                        String[] pn = track.target.getKeyframeablePropertyNames();
+                        String[] pd = track.target.getKeyframeablePropertyDisplayNames();
+                        for (int pi = 0; pi < pn.length; pi++) {
+                            if (pn[pi].equals(track.propertyName)) { propDisp = pd[pi]; break; }
+                        }
+                        break;
+                    }
+                }
+
+                boolean selected = (ti == kfSelectedTrackIdx);
+                if (selected) ImGui.pushStyleColor(imgui.flag.ImGuiCol.Text, 1f, 1f, 0.4f, 1f);
+
+                if (ImGui.selectable(
+                        String.format("  %s :: %s  (%d keys)##track%d",
+                            tgtName, propDisp, track.keyframeCount(), ti),
+                        selected))
+                    kfSelectedTrackIdx = ti;
+
+                if (selected) ImGui.popStyleColor();
+
+                ImGui.sameLine();
+                ImGui.setCursorPosX(ImGui.getWindowWidth() - 48);
+                if (ImGui.button(String.format("×##deltrack%d", ti))) {
+                    kfTimeline.removeTrackAt(ti);
+                    if (kfSelectedTrackIdx >= kfTimeline.trackCount())
+                        kfSelectedTrackIdx = kfTimeline.trackCount() - 1;
+                    break; // list modified, stop iteration this frame
+                }
+            }
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+
+        // ── Keyframe table for selected track ─────────────────────────────────
+        if (kfSelectedTrackIdx >= 0 && kfSelectedTrackIdx < tracks.size()) {
+            com.retrocam.keyframe.KeyframeTrack selTrack = tracks.get(kfSelectedTrackIdx);
+
+            // Display name for selected track
+            String selTgtName  = "Track";
+            String selPropDisp = selTrack.propertyName;
+            for (com.retrocam.keyframe.KeyframeTarget t : targets) {
+                if (t.target == selTrack.target) {
+                    selTgtName = t.displayName;
+                    String[] pn = selTrack.target.getKeyframeablePropertyNames();
+                    String[] pd = selTrack.target.getKeyframeablePropertyDisplayNames();
+                    for (int pi = 0; pi < pn.length; pi++) {
+                        if (pn[pi].equals(selTrack.propertyName)) { selPropDisp = pd[pi]; break; }
+                    }
+                    break;
+                }
+            }
+
+            ImGui.textColored(0.8f, 0.8f, 0.4f, 1f,
+                String.format("Keyframes — %s :: %s", selTgtName, selPropDisp));
+
+            java.util.List<com.retrocam.keyframe.KeyframeTrack.Keyframe> kfs = selTrack.getKeyframes();
+
+            // Column headers
+            ImGui.text("  Time (s)        Value        Interpolation");
+            ImGui.separator();
+
+            for (int ki = 0; ki < kfs.size(); ki++) {
+                com.retrocam.keyframe.KeyframeTrack.Keyframe kf = kfs.get(ki);
+
+                // Time field
+                kfTimeEdit.set(kf.time);
+                ImGui.setNextItemWidth(80);
+                if (ImGui.inputFloat(String.format("##kft%d", ki), kfTimeEdit, 0f, 0f, "%.3f"))
+                    kf.time = Math.max(0f, Math.min(duration, kfTimeEdit.get()));
+
+                ImGui.sameLine();
+
+                // Value field
+                kfValueEdit.set(kf.value);
+                ImGui.setNextItemWidth(90);
+                if (ImGui.inputFloat(String.format("##kfv%d", ki), kfValueEdit, 0f, 0f, "%.4f"))
+                    kf.value = kfValueEdit.get();
+
+                ImGui.sameLine();
+
+                // Interpolation combo
+                kfInterpCombo.set(kf.interp.toIndex());
+                ImGui.setNextItemWidth(80);
+                if (ImGui.combo(String.format("##kfi%d", ki), kfInterpCombo,
+                        com.retrocam.keyframe.KeyframeTrack.Interpolation.LABELS))
+                    kf.interp = com.retrocam.keyframe.KeyframeTrack.Interpolation
+                        .fromIndex(kfInterpCombo.get());
+
+                ImGui.sameLine();
+
+                if (ImGui.button(String.format("×##delkf%d", ki))) {
+                    selTrack.removeKeyframe(ki);
+                    break;
+                }
+            }
+
+            ImGui.spacing();
+
+            // "Add keyframe" button
+            float curVal = selTrack.target.getKeyframeableProperty(selTrack.propertyName);
+            if (ImGui.button(String.format("+ Add KF at %.2fs (val: %.4f)##addkf",
+                    kfScrubTime, curVal))) {
+                selTrack.addKeyframe(kfScrubTime, curVal,
+                    com.retrocam.keyframe.KeyframeTrack.Interpolation.LINEAR);
+            }
+
+            // Live interpolated preview value at scrub time
+            float previewVal = selTrack.evaluate(kfScrubTime, curVal);
+            ImGui.sameLine();
+            ImGui.textDisabled(String.format("→ %.4f", previewVal));
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+
+        // ── Clear all ─────────────────────────────────────────────────────────
+        if (!kfTimeline.isEmpty()) {
+            if (ImGui.button("Clear All Tracks##kfClear")) {
+                // Remove all tracks one by one (immutable view, iterate backwards)
+                for (int i = kfTimeline.trackCount() - 1; i >= 0; i--)
+                    kfTimeline.removeTrackAt(i);
+                kfSelectedTrackIdx = -1;
             }
         }
     }
