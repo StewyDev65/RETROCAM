@@ -65,8 +65,8 @@ public final class RenderSettings {
     public boolean p19Enabled = false;  // scanlines
 
     // ── Post-process key values (Phase 6) ─────────────────────────────────────
-    public float chromaResSigma      = 15.0f;
-    public float timebaseAmplitudePx = 0.45f;
+    public float chromaResSigma      = 7.0f;
+    public float timebaseAmplitudePx = 1.5f;
     public float dropoutProbability  = 0.15f;
     public float edgeEnhanceAmount   = 1.5f;
     public float vignetteStrength    = 1.4f;
@@ -83,22 +83,51 @@ public final class RenderSettings {
     // ── Phase 6: p01 Downsample ───────────────────────────────────────────────
     // Horizontal Gaussian sigma (px) for VHS luma bandwidth limit.
     // At 854 px wide, sigma=1.5 yields ~240 effective horizontal TV lines.
-    public float lumaBlurSigma = 0.333f;
+    public float lumaBlurSigma = 1.5f;
 
     // ── Phase 6: p07 CCD Noise ────────────────────────────────────────────────
     // lumaNoiseBase: floor amplitude for bright pixels.
     // chromaNoiseScale: chroma noise amplitude as a multiplier of luma amplitude.
-    public float ccdNoiseLumaBase    = 0.001f;
-    public float ccdNoiseChromaScale = 1.05f;
+    public float ccdNoiseLumaBase    = 0.015f;
+    public float ccdNoiseChromaScale = 1.6f;
 
     // ── Phase 6: p09 Chroma Bleed ─────────────────────────────────────────────
     // IIR decay factor per pixel (k).  Higher = longer smear tail.
     // 0.35 ≈ real composite demodulator settling time at VHS resolution.
-    public float chromaBleedFactor = 0.75f;
+    public float chromaBleedFactor = 0.35f;
 
     // ── Phase 6: p10 Timebase ─────────────────────────────────────────────────
     // Spatial frequency (rad/px) and temporal rate (rad/s) of the sinusoidal
     // wobble component.  Noise component uses the same amplitude.
     public float timebaseFreq  = 0.02f;
     public float timebaseSpeed = 0.70f;
+
+    // ── Phase 6: p03 Color Matrix ─────────────────────────────────────────────
+    // colorTempBias:   -1 = cool (blue push), +1 = warm (amber push).
+    // colorHueRot:     I/Q phase error in degrees; ±5 is typical VHS drift.
+    // colorSaturation: VHS SP desaturates ~5% vs broadcast; default 0.95.
+    // colorDriftSpeed: Sinusoidal colour-temp oscillation rate (rad/s).
+    //                  Period = 2pi/speed; at 0.05 rad/s -> ~126 s full cycle.
+    public float colorTempBias    = 0.0f;
+    public float colorHueRot      = 0.0f;
+    public float colorSaturation  = 0.95f;
+    public float colorDriftSpeed  = 0.05f;
+
+    // ── Phase 6: p04 Dynamic Range ────────────────────────────────────────────
+    // blackLift:       IRE 7.5 setup level ~0.03 in linear light.
+    // shadowCrush:     Below this level, detail is lost in tape noise floor.
+    // highlightKnee:   Onset of magnetic tape B-H saturation compression.
+    // highlightClip:   Remanence ceiling — signals are hard-capped here.
+    public float drBlackLift     = 0.01f;
+    public float drShadowCrush   = 0.03f;
+    public float drHighlightKnee = 0.78f;
+    public float drHighlightClip = 0.95f;
+
+    // ── Phase 6: p08 CCD Smear ────────────────────────────────────────────────
+    // smearThreshold:  Full-well fraction; pixels above this overflow.
+    // smearIntensity:  Multiplier on overflow -> streak brightness.
+    // smearLength:     Vertical extent in pixels; 80 px ~= consumer 1/3" CCD.
+    public float ccdSmearThreshold = 0.85f;
+    public float ccdSmearIntensity = 0.009f;
+    public int   ccdSmearLength    = 20;
 }

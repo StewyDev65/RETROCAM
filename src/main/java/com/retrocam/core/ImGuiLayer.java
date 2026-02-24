@@ -295,6 +295,36 @@ public final class ImGuiLayer {
         if (ImGui.sliderFloat("Chroma Blur Sigma (px)##p02", floatBuf, 1f, 20f))
             s.chromaResSigma = floatBuf[0];
 
+        // p03 – Color matrix
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p03  Color Matrix");
+        floatBuf[0] = s.colorTempBias;
+        if (ImGui.sliderFloat("Color Temp Bias##p03", floatBuf, -1f, 1f))
+            s.colorTempBias = floatBuf[0];
+        floatBuf[0] = s.colorHueRot;
+        if (ImGui.sliderFloat("Hue Rotation (deg)##p03", floatBuf, -30f, 30f))
+            s.colorHueRot = floatBuf[0];
+        floatBuf[0] = s.colorSaturation;
+        if (ImGui.sliderFloat("Saturation##p03", floatBuf, 0f, 2f))
+            s.colorSaturation = floatBuf[0];
+        floatBuf[0] = s.colorDriftSpeed;
+        if (ImGui.sliderFloat("Drift Speed (rad/s)##p03", floatBuf, 0f, 0.5f))
+            s.colorDriftSpeed = floatBuf[0];
+
+        // p04 – Dynamic range
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p04  Dynamic Range");
+        floatBuf[0] = s.drBlackLift;
+        if (ImGui.sliderFloat("Black Lift##p04", floatBuf, 0f, 0.10f))
+            s.drBlackLift = floatBuf[0];
+        floatBuf[0] = s.drShadowCrush;
+        if (ImGui.sliderFloat("Shadow Crush##p04", floatBuf, 0f, 0.20f))
+            s.drShadowCrush = floatBuf[0];
+        floatBuf[0] = s.drHighlightKnee;
+        if (ImGui.sliderFloat("Highlight Knee##p04", floatBuf, 0.40f, 1.0f))
+            s.drHighlightKnee = floatBuf[0];
+        floatBuf[0] = s.drHighlightClip;
+        if (ImGui.sliderFloat("Highlight Clip##p04", floatBuf, 0.60f, 1.0f))
+            s.drHighlightClip = floatBuf[0];
+
         // p07 – CCD noise
         ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p07  CCD Noise");
         floatBuf[0] = s.ccdNoiseLumaBase;
@@ -303,6 +333,18 @@ public final class ImGuiLayer {
         floatBuf[0] = s.ccdNoiseChromaScale;
         if (ImGui.sliderFloat("Chroma Noise Scale##p07", floatBuf, 1f, 4f))
             s.ccdNoiseChromaScale = floatBuf[0];
+
+        // p08 – CCD smear
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p08  CCD Smear");
+        floatBuf[0] = s.ccdSmearThreshold;
+        if (ImGui.sliderFloat("Smear Threshold##p08", floatBuf, 0.50f, 1.0f))
+            s.ccdSmearThreshold = floatBuf[0];
+        floatBuf[0] = s.ccdSmearIntensity;
+        if (ImGui.sliderFloat("Smear Intensity##p08", floatBuf, 0f, 1.0f))
+            s.ccdSmearIntensity = floatBuf[0];
+        intBuf[0] = s.ccdSmearLength;
+        if (ImGui.sliderInt("Smear Length (px)##p08", intBuf, 10, 150))
+            s.ccdSmearLength = intBuf[0];
 
         // p09 – Chroma bleed
         ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p09  Chroma Bleed");

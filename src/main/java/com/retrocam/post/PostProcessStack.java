@@ -16,7 +16,8 @@ import static org.lwjgl.opengl.GL30.*;
  * Manages the full 20-pass post-process pipeline.
  *
  * <p><b>Batch 1 (this class):</b> p00 normalize, p01 downsample, p02 chroma-res,
- * p07 CCD noise, p09 chroma-bleed, p10 timebase.
+ * p03 color-matrix, p04 dynamic-range, p07 CCD noise, p08 CCD smear,
+ * p09 chroma-bleed, p10 timebase.
  * Tonemapping is handled by the display shader (display.frag), not a post-process pass.
  * Passes not yet implemented are skipped (input passes through unchanged).</p>
  *
@@ -47,7 +48,10 @@ public final class PostProcessStack {
     private final PostProcessPass p00Normalize;   // accum÷N + exposure
     private final PostProcessPass p01Downsample;  // luma horizontal BW limit
     private final PostProcessPass p02ChromaRes;   // VHS chroma resolution loss
+    private final PostProcessPass p03ColorMatrix; // warm bias, hue, saturation, drift
+    private final PostProcessPass p04DynamicRange;// tape DR curve: lift/crush/knee/clip
     private final PostProcessPass p07CcdNoise;    // CCD sensor noise (AGC-scaled)
+    private final PostProcessPass p08CcdSmear;    // vertical column overflow streak
     private final PostProcessPass p09ChromaBleed; // rightward chroma smear
     private final PostProcessPass p10Timebase;    // per-scanline horizontal jitter
 
@@ -62,12 +66,15 @@ public final class PostProcessStack {
         normalizeBuffer = new Framebuffer(W, H, GL_RGBA32F);
         pingPong        = new PingPongBuffer(W, H, GL_RGBA32F);
 
-        p00Normalize   = new PostProcessPass("p00_normalize",   "/shaders/post/p00_normalize.frag");
-        p01Downsample  = new PostProcessPass("p01_downsample",  "/shaders/post/p01_downsample.frag");
-        p02ChromaRes   = new PostProcessPass("p02_chroma_res",  "/shaders/post/p02_chroma_res.frag");
-        p07CcdNoise    = new PostProcessPass("p07_ccd_noise",   "/shaders/post/p07_ccd_noise.frag");
-        p09ChromaBleed = new PostProcessPass("p09_chroma_bleed","/shaders/post/p09_chroma_bleed.frag");
-        p10Timebase    = new PostProcessPass("p10_timebase",    "/shaders/post/p10_timebase.frag");
+        p00Normalize   = new PostProcessPass("p00_normalize",    "/shaders/post/p00_normalize.frag");
+        p01Downsample  = new PostProcessPass("p01_downsample",   "/shaders/post/p01_downsample.frag");
+        p02ChromaRes   = new PostProcessPass("p02_chroma_res",   "/shaders/post/p02_chroma_res.frag");
+        p03ColorMatrix = new PostProcessPass("p03_color_matrix", "/shaders/post/p03_color_matrix.frag");
+        p04DynamicRange= new PostProcessPass("p04_dynamic_range","/shaders/post/p04_dynamic_range.frag");
+        p07CcdNoise    = new PostProcessPass("p07_ccd_noise",    "/shaders/post/p07_ccd_noise.frag");
+        p08CcdSmear    = new PostProcessPass("p08_ccd_smear",    "/shaders/post/p08_ccd_smear.frag");
+        p09ChromaBleed = new PostProcessPass("p09_chroma_bleed", "/shaders/post/p09_chroma_bleed.frag");
+        p10Timebase    = new PostProcessPass("p10_timebase",     "/shaders/post/p10_timebase.frag");
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -132,7 +139,28 @@ public final class PostProcessStack {
             });
         }
 
-        // p03 – p06: not yet implemented – pass through
+        // p03 – Colour temperature bias, hue rotation, saturation, slow drift
+        if (s.p03Enabled) {
+            current = swap(p03ColorMatrix, current, sh -> {
+                sh.setFloat("u_colorTempBias",    s.colorTempBias);
+                sh.setFloat("u_colorHueRot",      s.colorHueRot);
+                sh.setFloat("u_colorSaturation",  s.colorSaturation);
+                sh.setFloat("u_colorDriftSpeed",  s.colorDriftSpeed);
+                sh.setFloat("u_time",             ts.time);
+            });
+        }
+
+        // p04 – Magnetic tape dynamic range: black lift, shadow crush, highlight knee/clip
+        if (s.p04Enabled) {
+            current = swap(p04DynamicRange, current, sh -> {
+                sh.setFloat("u_blackLift",      s.drBlackLift);
+                sh.setFloat("u_shadowCrush",    s.drShadowCrush);
+                sh.setFloat("u_highlightKnee",  s.drHighlightKnee);
+                sh.setFloat("u_highlightClip",  s.drHighlightClip);
+            });
+        }
+
+        // p05 – p06: not yet implemented – pass through
 
         // p07 – CCD sensor noise (luminance-dependent, AGC-scaled, chroma noise)
         if (s.p07Enabled) {
@@ -144,7 +172,14 @@ public final class PostProcessStack {
             });
         }
 
-        // p08: not yet implemented – pass through
+        // p08 – CCD vertical column overflow streak from bright sources
+        if (s.p08Enabled) {
+            current = swap(p08CcdSmear, current, sh -> {
+                sh.setFloat("u_smearThreshold", s.ccdSmearThreshold);
+                sh.setFloat("u_smearIntensity", s.ccdSmearIntensity);
+                sh.setInt  ("u_smearLength",    s.ccdSmearLength);
+            });
+        }
 
         // p09 – Horizontal chroma bleed (rightward exponential smear)
         if (s.p09Enabled) {
@@ -218,7 +253,10 @@ public final class PostProcessStack {
         p00Normalize.destroy();
         p01Downsample.destroy();
         p02ChromaRes.destroy();
+        p03ColorMatrix.destroy();
+        p04DynamicRange.destroy();
         p07CcdNoise.destroy();
+        p08CcdSmear.destroy();
         p09ChromaBleed.destroy();
         p10Timebase.destroy();
     }
