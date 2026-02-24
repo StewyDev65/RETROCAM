@@ -416,6 +416,13 @@ public final class ImGuiLayer {
             editor.markDirty();
         }
 
+        // ── Rotation ──────────────────────────────────────────────────────────────
+        float[] rot = {obj.rx, obj.ry, obj.rz};
+        if (ImGui.dragFloat3("Rotation (deg)##obj", rot, 0.5f)) {
+            obj.rx = rot[0]; obj.ry = rot[1]; obj.rz = rot[2];
+            editor.markDirty();
+        }
+
         // ── Size ──────────────────────────────────────────────────────────────
         if (obj.type == SceneObject.Type.BOX) {
             float[] ext = {obj.sx, obj.sy, obj.sz};

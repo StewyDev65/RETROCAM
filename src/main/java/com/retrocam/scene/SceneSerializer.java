@@ -54,6 +54,7 @@ public final class SceneSerializer {
             sb.append("      \"type\": ")          .append(jStr(o.type.name())).append(",\n");
             sb.append("      \"px\": ").append(o.px).append(", \"py\": ").append(o.py).append(", \"pz\": ").append(o.pz).append(",\n");
             sb.append("      \"sx\": ").append(o.sx).append(", \"sy\": ").append(o.sy).append(", \"sz\": ").append(o.sz).append(",\n");
+            sb.append("      \"rx\": ").append(o.rx).append(", \"ry\": ").append(o.ry).append(", \"rz\": ").append(o.rz).append(",\n");
             sb.append("      \"stacks\": ").append(o.stacks).append(", \"slices\": ").append(o.slices).append(",\n");
             sb.append("      \"materialIndex\": ").append(o.materialIndex).append("\n");
             sb.append("    }").append(i < objs.size() - 1 ? "," : "").append("\n");
@@ -100,6 +101,7 @@ public final class SceneSerializer {
                 String typeStr= strField(obj, "type");
                 float px = floatField(obj, "px"), py = floatField(obj, "py"), pz = floatField(obj, "pz");
                 float sx = floatField(obj, "sx"), sy = floatField(obj, "sy"), sz = floatField(obj, "sz");
+                float rx = floatField(obj, "rx"), ry = floatField(obj, "ry"), rz = floatField(obj, "rz");
                 int stacks = (int) floatField(obj, "stacks");
                 int slices = (int) floatField(obj, "slices");
                 int matIdx = (int) floatField(obj, "materialIndex");
@@ -110,6 +112,7 @@ public final class SceneSerializer {
                         name != null ? name : "Object", t,
                         px, py, pz, sx, sy, sz,
                         Math.max(0, matIdx));
+                so.rx = rx; so.ry = ry; so.rz = rz;
                 if (stacks > 2) so.stacks = stacks;
                 if (slices > 2) so.slices = slices;
                 editor.addObject(so);

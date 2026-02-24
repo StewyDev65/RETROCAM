@@ -19,6 +19,9 @@ public final class SceneObject {
     // SPHERE: sx = radius  (sy, sz ignored during tessellation)
     public float sx = 1f, sy = 1f, sz = 1f;
 
+    // Euler rotation angles in degrees (XYZ order)
+    public float rx = 0f, ry = 0f, rz = 0f;
+
     // Sphere tessellation quality (ignored for BOX)
     public int stacks = 24, slices = 24;
 
@@ -37,10 +40,13 @@ public final class SceneObject {
 
     /** Instantiates the corresponding immutable {@link Primitive}. */
     public Primitive toPrimitive() {
-        return switch (type) {
+        Primitive base = switch (type) {
             case BOX    -> new Box(px, py, pz, sx, sy, sz, materialIndex);
             case SPHERE -> new Sphere(px, py, pz, sx, materialIndex, stacks, slices);
         };
+        if (rx != 0f || ry != 0f || rz != 0f)
+            return new TransformedPrimitive(base, px, py, pz, rx, ry, rz);
+        return base;
     }
 
     // ── Default factories ─────────────────────────────────────────────────────
