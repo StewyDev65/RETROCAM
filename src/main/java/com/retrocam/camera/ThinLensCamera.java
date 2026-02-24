@@ -1,26 +1,31 @@
 package com.retrocam.camera;
 
 import com.retrocam.core.RenderSettings;
+import com.retrocam.core.TemporalState;
 import com.retrocam.gl.ShaderProgram;
 
 /**
  * Thin-lens camera model.
  *
  * Derives physical lens parameters from the settings bean and uploads
- * them to any shader that implements the pathtrace camera model:
- *   u_camPos, u_camRight, u_camUp, u_camForward
- *   u_focalDist, u_lensRadius, u_apertureBlades
- *   u_saStrength (Phase 4 — uploaded as 0 in Phase 3)
- *   u_lcaDelta   (Phase 4 — uploaded as zeroes in Phase 3)
+ * them to any shader that implements the pathtrace camera model.
  *
- * Lens radius is derived from focal length and f-stop:
- *   lensRadius = (focalLengthMm / 1000) / (2 * fStop)
- * The result is in metres (world-space units).
+ * Phase 4 additions:
+ *   u_saStrength — spherical aberration strength (radial focal shift)
+ *   u_lcaDelta   — per-channel focal offsets for longitudinal CA (R, G, B)
+ *   u_focalDist  — now reads from TemporalState.focalDist (IIR-filtered) so
+ *                  auto-focus lag is applied physically in the lens model
  */
 public final class ThinLensCamera {
 
-    /** Upload all camera uniforms to {@code shader} (must be bound). */
-    public void uploadTo(ShaderProgram shader, OrbitCamera orbit, RenderSettings s) {
+    /**
+     * Upload all camera uniforms to {@code shader} (must be bound).
+     *
+     * @param temporal supplies the IIR-filtered focal distance and other
+     *                 per-frame state so auto-focus lag affects ray generation.
+     */
+    public void uploadTo(ShaderProgram shader, OrbitCamera orbit,
+                         RenderSettings s, TemporalState temporal) {
         float[] eye     = orbit.getEyePosition();
         float[] right   = orbit.getCameraRight();
         float[] up      = orbit.getCameraUp();
@@ -31,25 +36,30 @@ public final class ThinLensCamera {
         shader.setFloat3("u_camUp",      up[0],      up[1],      up[2]);
         shader.setFloat3("u_camForward", forward[0], forward[1], forward[2]);
 
-        // Convert focal length mm → metres, then compute lens radius
+        // Convert focal length mm → metres, then compute lens radius from f-stop.
         float focalM     = s.focalLengthMm / 1000.0f;
         float lensRadius = focalM / (2.0f * s.apertureFStop);
 
-        shader.setFloat("u_focalDist",       s.focusDistM);
+        // Use the IIR-filtered focal distance from TemporalState so auto-focus
+        // lag (R4) is correctly applied in the shader ray generator.
+        shader.setFloat("u_focalDist",       temporal.focalDist);
         shader.setFloat("u_lensRadius",      lensRadius);
         shader.setFloat("u_fovTanHalf",      tanHalfFov(s));
         shader.setInt  ("u_apertureBlades",  s.aperatureBlades);
 
-        // Phase 4 stubs — set to neutral values so the shader compiles correctly
-        shader.setFloat("u_saStrength", 0.0f);
-        shader.setFloat3("u_lcaDelta",  0.0f, 0.0f, 0.0f);
+        // ── Phase 4 optical effects ────────────────────────────────────────────
+        // Spherical aberration: edge rays focus at focalDist + saStrength.
+        shader.setFloat("u_saStrength", s.saStrength);
+
+        // Longitudinal CA: per-channel focal offsets in metres.
+        // Negative for R (near focus), zero for G, positive for B (far focus).
+        shader.setFloat3("u_lcaDelta",
+            s.lcaDelta[0], s.lcaDelta[1], s.lcaDelta[2]);
     }
 
     /**
-     * tan(fovY/2) used in the shader to construct view rays from pixel coordinates.
-     * We derive a vertical FOV from the focal length using the 35mm full-frame
-     * sensor height of 24mm:
-     *   fovY = 2 * atan(sensorHalfHeight / focalLength)
+     * tan(fovY/2) used in the shader to construct view rays from NDC coordinates.
+     * Derived from focal length assuming a 35mm full-frame sensor (24mm height).
      */
     public static float tanHalfFov(RenderSettings s) {
         float sensorHalfH = 0.012f; // 24mm sensor / 2, in metres

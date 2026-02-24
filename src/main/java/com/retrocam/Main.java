@@ -9,6 +9,7 @@ import com.retrocam.core.TemporalState;
 import com.retrocam.gl.ShaderProgram;
 import com.retrocam.scene.Scene;
 import com.retrocam.scene.SceneUploader;
+import com.retrocam.scene.SPPMManager;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
@@ -36,24 +37,29 @@ public final class Main {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
     private Renderer      renderer;
+    private SPPMManager   sppmManager;
     private ShaderProgram displayShader;
     private int           fullscreenVao;
 
-    // ── Previous settings snapshot (detect changes that need accum reset) ─────
-    private float prevFocalLength, prevFStop, prevFocusDist;
+    // ── Settings snapshot for accumulation-reset detection ────────────────────
+    // Phase 4: also track SA and LCA so optical changes trigger a clean restart.
+    private float   prevFocalLength, prevFStop, prevFocusDist;
+    private float   prevSaStrength;
+    private float   prevLcaR, prevLcaG, prevLcaB;
+    private boolean prevSppmEnabled;
 
     // ── Timing ────────────────────────────────────────────────────────────────
     private long   lastNanoTime  = System.nanoTime();
     private double fpsTimer      = 0.0;
     private int    fpsFrameCount = 0;
-    private float  currentFps    = 0.0f;
+    private float  currentFps   = 0.0f;
 
     // ── Entry ─────────────────────────────────────────────────────────────────
 
     public static void main(String[] args) { new Main().run(); }
     private void run() { init(); loop(); shutdown(); }
 
-    // ── Init ─────────────────────────────────────────────────────────────────
+    // ── Init ──────────────────────────────────────────────────────────────────
 
     private void init() {
         settings = new RenderSettings();
@@ -65,7 +71,7 @@ public final class Main {
         initImGui();
         snapshotSettings();
 
-        System.out.println("[RetroCam] Phase 3 ready — path tracer");
+        System.out.println("[RetroCam] Phase 4 ready — optical effects (SA, LCA, AF lag, polygon bokeh)");
         System.out.println("[RetroCam] GL  : " + glGetString(GL_RENDERER));
         System.out.println("[RetroCam] GLSL: " + glGetString(GL_SHADING_LANGUAGE_VERSION));
     }
@@ -131,6 +137,7 @@ public final class Main {
     private void initGpuResources() {
         fullscreenVao = glGenVertexArrays();
         renderer      = new Renderer();
+        sppmManager   = new SPPMManager(settings);
         displayShader = ShaderProgram.createRender(
             "/shaders/fullscreen.vert", "/shaders/display.frag");
     }
@@ -140,7 +147,7 @@ public final class Main {
         imGui.init(window);
     }
 
-    // ── Loop ─────────────────────────────────────────────────────────────────
+    // ── Loop ──────────────────────────────────────────────────────────────────
 
     private void loop() {
         while (!glfwWindowShouldClose(window)) {
@@ -150,37 +157,57 @@ public final class Main {
 
             glfwPollEvents();
             camera.update(dt, window);
+
+            // ── Phase 4: wire AF target each frame ────────────────────────────
+            // The ImGui slider drives settings.focusDistM (the desired distance).
+            // TemporalState tracks it with an IIR filter so the actual focal dist
+            // used by the shader lags behind, simulating consumer AF behaviour.
+            temporal.setFocalDistTarget(settings.focusDistM);
             temporal.update(dt, settings);
+
             glfwSwapInterval(settings.vSync ? 1 : 0);
 
-            // Reset accumulation if camera moved or lens settings changed
+            // Reset accumulation if camera moved or any optical setting changed
             if (camera.isDirty() || settingsChanged()) {
                 renderer.reset();
+                sppmManager.reset(settings);
                 camera.clearDirty();
                 snapshotSettings();
             }
 
-            // Render one path-trace pass (accumulate)
+            // Per-frame loop order (spec §10):
+            // 1. Temporal update (already done above via temporal.update)
+            // 2. SPPM photon trace
+            if (settings.sppmEnabled && sceneUploader.getLightCount() > 0) {
+                sppmManager.tracePhotons(sceneUploader, settings);
+            }
+            // 3. Path trace accumulation
             renderer.render(sceneUploader, camera, thinLens, temporal, settings);
+            // 4. SPPM gather (adds caustic radiance to accumulation buffer)
+            if (settings.sppmEnabled && sceneUploader.getLightCount() > 0) {
+                sppmManager.gatherRadiance(sceneUploader, camera,
+                    renderer.getAccumTexture(), settings, renderer.getTotalSamples());
+                // 5. Shrink search radius
+                sppmManager.updateRadius(settings.sppmAlpha);
+            }
 
             // Display result
             glClear(GL_COLOR_BUFFER_BIT);
             drawFullscreen();
 
             // ImGui overlay
-            float samplesPerSec = renderer.getTotalSamples() / Math.max((float) fpsTimer, 1e-3f);
             imGui.beginFrame();
             imGui.setStats(renderer.getTotalSamples(), currentFps, temporal.agcGain);
+            imGui.setSppmStats(sppmManager.getSearchRadius(), sppmManager.getIteration());
             imGui.render(settings);
             imGui.endFrame();
 
             glfwSwapBuffers(window);
-
             updateStats(dt);
         }
     }
 
-    // ── Display (blit accum texture → screen with tonemapping) ───────────────
+    // ── Display ───────────────────────────────────────────────────────────────
 
     private void drawFullscreen() {
         displayShader.bind();
@@ -196,18 +223,35 @@ public final class Main {
         displayShader.unbind();
     }
 
-    // ── Settings change detection (triggers accum reset) ─────────────────────
+    // ── Settings snapshot ─────────────────────────────────────────────────────
 
+    /** Capture all values that, when changed, require accumulation to restart. */
     private void snapshotSettings() {
         prevFocalLength = settings.focalLengthMm;
         prevFStop       = settings.apertureFStop;
         prevFocusDist   = settings.focusDistM;
+        prevSaStrength  = settings.saStrength;
+        prevLcaR        = settings.lcaDelta[0];
+        prevLcaG        = settings.lcaDelta[1];
+        prevLcaB        = settings.lcaDelta[2];
+        prevSppmEnabled = settings.sppmEnabled;
     }
 
+    /**
+     * Returns true if any optical setting has changed since the last snapshot.
+     * Phase 4: SA strength and LCA deltas are now included — changing either
+     * completely alters the per-channel focal distribution, so stale samples
+     * must be discarded.
+     */
     private boolean settingsChanged() {
-        return settings.focalLengthMm != prevFocalLength
-            || settings.apertureFStop != prevFStop
-            || settings.focusDistM    != prevFocusDist;
+        return settings.focalLengthMm  != prevFocalLength
+            || settings.apertureFStop  != prevFStop
+            || settings.focusDistM     != prevFocusDist
+            || settings.saStrength     != prevSaStrength
+            || settings.lcaDelta[0]    != prevLcaR
+            || settings.lcaDelta[1]    != prevLcaG
+            || settings.lcaDelta[2]    != prevLcaB
+            || settings.sppmEnabled    != prevSppmEnabled;
     }
 
     // ── Stats ─────────────────────────────────────────────────────────────────
@@ -230,6 +274,7 @@ public final class Main {
     private void shutdown() {
         imGui.destroy();
         renderer.destroy();
+        sppmManager.destroy();
         displayShader.destroy();
         glDeleteVertexArrays(fullscreenVao);
         sceneUploader.destroy();

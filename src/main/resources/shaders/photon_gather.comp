@@ -1,0 +1,222 @@
+#version 430 core
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── Accumulation buffer (add caustic contribution each frame) ─────────────────
+layout(rgba32f, binding = 0) uniform image2D u_accumBuffer;
+
+// ── Camera uniforms (pinhole — no DoF, keeps caustics sharp) ─────────────────
+uniform vec3  u_camPos;
+uniform vec3  u_camRight;
+uniform vec3  u_camUp;
+uniform vec3  u_camForward;
+uniform float u_fovTanHalf;
+uniform float u_aspect;
+uniform ivec2 u_resolution;
+
+// ── SPPM uniforms ─────────────────────────────────────────────────────────────
+uniform float u_searchRadius;
+uniform int   u_photonCount;
+uniform int   u_hashSize;
+uniform int   u_frameIndex;
+
+// ── Scene SSBOs ───────────────────────────────────────────────────────────────
+struct Triangle {
+    vec3 v0; float pad0;
+    vec3 v1; float pad1;
+    vec3 v2; float pad2;
+    vec3 n0; float pad3;
+    vec3 n1; float pad4;
+    vec3 n2; float pad5;
+    vec2 uv0; vec2 uv1;
+    vec2 uv2; int matIndex; float pad6;
+};
+struct BVHNode {
+    vec3 aabbMin; float pad0;
+    vec3 aabbMax; float pad1;
+    int leftChild; int rightChild; int primStart; int primCount;
+};
+struct Material {
+    vec3  albedo;          float metallic;
+    vec3  emission;        float emissionStrength;
+    float roughness;       float ior; float transmission; int albedoTex;
+    float p0; float p1; float p2; float p3;
+};
+
+layout(std430, binding = 0) readonly buffer TriBuffer { Triangle  triangles[]; };
+layout(std430, binding = 1) readonly buffer BVHBuffer { BVHNode   nodes[];     };
+layout(std430, binding = 2) readonly buffer MatBuffer { Material  materials[]; };
+
+// ── Photon map SSBOs ──────────────────────────────────────────────────────────
+struct Photon {
+    vec3 position; float pad0;
+    vec3 power;    float pad1;
+    vec3 dir;      float pad2;
+};
+
+layout(std430, binding = 4) readonly buffer PhotonBuffer   { Photon photons[];    };
+layout(std430, binding = 5) readonly buffer HashHeadBuffer { int    hashHeads[];  };
+layout(std430, binding = 6) readonly buffer PhotonNextBuf  { int    photonNext[]; };
+
+// ── BVH traversal ─────────────────────────────────────────────────────────────
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, out float tmin) {
+    vec3 t0 = (bmin - ro) * invRd;
+    vec3 t1 = (bmax - ro) * invRd;
+    vec3 lo = min(t0, t1), hi = max(t0, t1);
+    tmin = max(max(lo.x, lo.y), lo.z);
+    return min(min(hi.x, hi.y), hi.z) >= max(tmin, 0.0);
+}
+
+bool intersectTriangle(vec3 ro, vec3 rd, int idx, out float t, out vec2 bary) {
+    Triangle tri = triangles[idx];
+    vec3 e1 = tri.v1 - tri.v0, e2 = tri.v2 - tri.v0;
+    vec3 h  = cross(rd, e2);
+    float a = dot(e1, h);
+    if (abs(a) < 1e-8) return false;
+    float f = 1.0 / a;
+    vec3  s = ro - tri.v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3  q = cross(s, e1);
+    float v = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = f * dot(e2, q);
+    if (t < 1e-4) return false;
+    bary = vec2(u, v);
+    return true;
+}
+
+struct HitRecord { bool valid; float t; vec3 pos; vec3 normal; int matIndex; };
+
+HitRecord traverseBVH(vec3 ro, vec3 rd) {
+    HitRecord rec; rec.valid = false; rec.t = 1e30;
+    vec3 invRd = 1.0 / rd;
+    int stack[64]; int top = 0;
+    stack[top++] = 0;
+    while (top > 0) {
+        int idx = stack[--top];
+        BVHNode node = nodes[idx];
+        float aabbT;
+        if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, aabbT)) continue;
+        if (aabbT > rec.t) continue;
+        if (node.primCount > 0) {
+            for (int i = node.primStart; i < node.primStart + node.primCount; i++) {
+                float t; vec2 bary;
+                if (intersectTriangle(ro, rd, i, t, bary) && t < rec.t) {
+                    rec.t = t; rec.pos = ro + rd * t;
+                    Triangle tri = triangles[i];
+                    float w = 1.0 - bary.x - bary.y;
+                    rec.normal   = normalize(tri.n0*w + tri.n1*bary.x + tri.n2*bary.y);
+                    rec.matIndex = tri.matIndex;
+                    rec.valid    = true;
+                }
+            }
+        } else if (top < 62) {
+            stack[top++] = node.rightChild;
+            stack[top++] = node.leftChild;
+        }
+    }
+    return rec;
+}
+
+// ── Spatial hash ──────────────────────────────────────────────────────────────
+int cellHash(ivec3 c) {
+    int h = c.x * 73856093 ^ c.y * 19349663 ^ c.z * 83492791;
+    return int(uint(h) & uint(u_hashSize - 1));
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, u_resolution))) return;
+
+    // ── Cast pinhole camera ray ───────────────────────────────────────────────
+    vec2 ndc = (vec2(pixel) + 0.5) / vec2(u_resolution) * 2.0 - 1.0;
+    vec3 rd  = normalize(
+        u_camForward
+      + u_camRight * (ndc.x * u_aspect * u_fovTanHalf)
+      + u_camUp    * (ndc.y           * u_fovTanHalf)
+    );
+
+    // ── Find first diffuse surface hit ────────────────────────────────────────
+    // Walk through refractive / specular surfaces until we reach diffuse.
+    vec3  ro          = u_camPos;
+    vec3  currentRd   = rd;
+    bool  foundDiffuse = false;
+    vec3  hitPos, hitNormal;
+    int   hitMatIndex;
+
+    const int MAX_SPECULAR = 6;
+    for (int s = 0; s <= MAX_SPECULAR; s++) {
+        HitRecord hit = traverseBVH(ro, currentRd);
+        if (!hit.valid) break;
+
+        Material mat = materials[hit.matIndex];
+
+        // Diffuse hit — gather photons here.
+        if (mat.metallic <= 0.5 && mat.transmission <= 0.5) {
+            foundDiffuse = true;
+            hitPos      = hit.pos;
+            hitNormal   = hit.normal;
+            hitMatIndex = hit.matIndex;
+            break;
+        }
+
+        // Specular: continue ray (simplified — always transmit for glass, always reflect for metal)
+        vec3 n = dot(currentRd, hit.normal) < 0.0 ? hit.normal : -hit.normal;
+        if (mat.transmission > 0.5) {
+            bool entering  = dot(currentRd, hit.normal) < 0.0;
+            float eta      = entering ? (1.0 / mat.ior) : mat.ior;
+            vec3 refracted = refract(currentRd, n, eta);
+            if (dot(refracted, refracted) < 0.001) refracted = reflect(currentRd, n);
+            currentRd = normalize(refracted);
+        } else {
+            currentRd = reflect(currentRd, n);
+        }
+        ro = hit.pos + currentRd * 2e-3;
+    }
+
+    if (!foundDiffuse) return;
+
+    // ── Query 3×3×3 neighborhood of hash cells ────────────────────────────────
+    float r  = u_searchRadius;
+    float r2 = r * r;
+    ivec3 centerCell = ivec3(floor(hitPos / r));
+    vec3  caustic    = vec3(0.0);
+
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++) {
+        int h   = cellHash(centerCell + ivec3(dx, dy, dz));
+        int idx = hashHeads[h];
+        // Safety limit prevents infinite loops on corrupted/collided chains.
+        int safety = 0;
+        while (idx >= 0 && safety < 512) {
+            vec3  ppos  = photons[idx].position;
+            vec3  delta = hitPos - ppos;
+            float d2    = dot(delta, delta);
+            if (d2 <= r2) {
+                // Epanechnikov kernel: weight = 1 - d²/r²  (smoother than disk)
+                float w  = 1.0 - d2 / r2;
+                caustic += photons[idx].power * w;
+            }
+            idx    = photonNext[idx];
+            safety++;
+        }
+    }
+
+    // ── Radiance estimate ─────────────────────────────────────────────────────
+    // Epanechnikov normalisation: ∫₀¹ (1-t) 2t dt = 1/3
+    // Density estimate: Σ w_i Φ_i / (π r² × 2/3)  → Σ w_i Φ_i × 3 / (2 π r²)
+    // Radiance L = (albedo / π) × E
+    //           = (albedo / π) × Σ w_i Φ_i × 3 / (2 π r²)
+    // In practice we absorb the extra π factors so the result is visually calibrated.
+    const float PI = 3.14159265358979;
+    Material mat   = materials[hitMatIndex];
+    vec3 causticL  = mat.albedo * caustic / (PI * r2);
+
+    if (any(isnan(causticL)) || any(isinf(causticL))) causticL = vec3(0.0);
+
+    // Accumulate into the shared HDR buffer (averaged by display pass / totalSamples)
+    vec4 prev = imageLoad(u_accumBuffer, pixel);
+    imageStore(u_accumBuffer, pixel, prev + vec4(causticL, 0.0));
+}

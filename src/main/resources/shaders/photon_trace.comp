@@ -1,0 +1,252 @@
+#version 430 core
+layout(local_size_x = 64) in;
+
+// ── Scene SSBOs ───────────────────────────────────────────────────────────────
+struct Triangle {
+    vec3 v0; float pad0;
+    vec3 v1; float pad1;
+    vec3 v2; float pad2;
+    vec3 n0; float pad3;
+    vec3 n1; float pad4;
+    vec3 n2; float pad5;
+    vec2 uv0; vec2 uv1;
+    vec2 uv2; int matIndex; float pad6;
+};
+struct BVHNode {
+    vec3 aabbMin; float pad0;
+    vec3 aabbMax; float pad1;
+    int leftChild; int rightChild; int primStart; int primCount;
+};
+struct Material {
+    vec3  albedo;          float metallic;
+    vec3  emission;        float emissionStrength;
+    float roughness;       float ior; float transmission; int albedoTex;
+    float p0; float p1; float p2; float p3;
+};
+struct Light {
+    vec3 v0;       float area;
+    vec3 v1;       float pad1;
+    vec3 v2;       float pad2;
+    vec3 emission; float power;
+    vec3 normal;   float cdfWeight;
+};
+
+layout(std430, binding = 0) readonly buffer TriBuffer   { Triangle  triangles[]; };
+layout(std430, binding = 1) readonly buffer BVHBuffer   { BVHNode   nodes[];     };
+layout(std430, binding = 2) readonly buffer MatBuffer   { Material  materials[]; };
+layout(std430, binding = 3) readonly buffer LightBuffer { Light     lights[];    };
+
+// ── Photon map SSBOs ──────────────────────────────────────────────────────────
+struct Photon {
+    vec3 position; float pad0;
+    vec3 power;    float pad1;
+    vec3 dir;      float pad2;
+};
+
+layout(std430, binding = 4) writeonly buffer PhotonBuffer   { Photon photons[];    };
+layout(std430, binding = 5) coherent  buffer HashHeadBuffer { int    hashHeads[];  };
+layout(std430, binding = 6) coherent  buffer PhotonNextBuf  { int    photonNext[]; };
+layout(std430, binding = 7) coherent  buffer CounterBuffer  { uint   counter[];    };
+
+// ── Uniforms ──────────────────────────────────────────────────────────────────
+uniform int   u_photonCount;
+uniform float u_searchRadius;
+uniform int   u_seed;
+uniform int   u_hashSize;
+uniform int   u_lightCount;
+uniform float u_totalLightPower;
+
+// ── PCG RNG ───────────────────────────────────────────────────────────────────
+uint pcg(inout uint state) {
+    state = state * 747796405u + 2891336453u;
+    uint w = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+float rand(inout uint state) { return float(pcg(state)) / 4294967296.0; }
+vec2  rand2(inout uint state){ return vec2(rand(state), rand(state)); }
+
+uint initSeed(uint photonIdx) {
+    uint s = photonIdx * 1664525u + uint(u_seed) * 1013904223u + 2531011u;
+    pcg(s); pcg(s);
+    return s;
+}
+
+// ── BVH traversal ─────────────────────────────────────────────────────────────
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, out float tmin) {
+    vec3 t0 = (bmin - ro) * invRd, t1 = (bmax - ro) * invRd;
+    vec3 lo = min(t0, t1), hi = max(t0, t1);
+    tmin = max(max(lo.x, lo.y), lo.z);
+    return min(min(hi.x, hi.y), hi.z) >= max(tmin, 0.0);
+}
+
+bool intersectTriangle(vec3 ro, vec3 rd, int idx, out float t, out vec2 bary) {
+    Triangle tri = triangles[idx];
+    vec3 e1 = tri.v1 - tri.v0, e2 = tri.v2 - tri.v0, h = cross(rd, e2);
+    float a = dot(e1, h);
+    if (abs(a) < 1e-8) return false;
+    float f = 1.0 / a;
+    vec3  s = ro - tri.v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3  q = cross(s, e1);
+    float v = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = f * dot(e2, q);
+    if (t < 1e-4) return false;
+    bary = vec2(u, v);
+    return true;
+}
+
+struct HitRecord { bool valid; float t; vec3 pos; vec3 normal; int matIndex; };
+
+HitRecord traverseBVH(vec3 ro, vec3 rd) {
+    HitRecord rec; rec.valid = false; rec.t = 1e30;
+    vec3 invRd = 1.0 / rd;
+    int stack[64]; int top = 0; stack[top++] = 0;
+    while (top > 0) {
+        int idx = stack[--top]; BVHNode node = nodes[idx];
+        float aabbT;
+        if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, aabbT)) continue;
+        if (aabbT > rec.t) continue;
+        if (node.primCount > 0) {
+            for (int i = node.primStart; i < node.primStart + node.primCount; i++) {
+                float t; vec2 bary;
+                if (intersectTriangle(ro, rd, i, t, bary) && t < rec.t) {
+                    rec.t = t; rec.pos = ro + rd * t;
+                    Triangle tri = triangles[i];
+                    float w = 1.0 - bary.x - bary.y;
+                    rec.normal   = normalize(tri.n0*w + tri.n1*bary.x + tri.n2*bary.y);
+                    rec.matIndex = tri.matIndex;
+                    rec.valid    = true;
+                }
+            }
+        } else if (top < 62) {
+            stack[top++] = node.rightChild; stack[top++] = node.leftChild;
+        }
+    }
+    return rec;
+}
+
+// ── Cosine hemisphere sampling ────────────────────────────────────────────────
+vec3 cosineHemisphere(vec2 u, vec3 n) {
+    float r = sqrt(u.x), phi = 6.28318530718 * u.y;
+    vec3 local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u.x)));
+    vec3 up = abs(n.y) < 0.9999 ? vec3(0,1,0) : vec3(1,0,0);
+    vec3 t = normalize(cross(up, n)), b = cross(n, t);
+    return normalize(mat3(t, b, n) * local);
+}
+
+// ── Spatial hash ─────────────────────────────────────────────────────────────
+int cellHash(ivec3 c) {
+    int h = c.x * 73856093 ^ c.y * 19349663 ^ c.z * 83492791;
+    return int(uint(h) & uint(u_hashSize - 1));
+}
+
+// ── Fresnel (Schlick) ─────────────────────────────────────────────────────────
+float fresnelSchlick(float cosTheta, float ior) {
+    float r0 = (1.0 - ior) / (1.0 + ior); r0 *= r0;
+    return r0 + (1.0 - r0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// ── Store photon in spatial hash ──────────────────────────────────────────────
+void storePhoton(vec3 pos, vec3 power, vec3 dir) {
+    uint idx = atomicAdd(counter[0], 1u);
+    if (idx >= uint(u_photonCount)) return;
+
+    // Lock-free linked-list insertion
+    ivec3 cell   = ivec3(floor(pos / u_searchRadius));
+    int hashCell = cellHash(cell);
+    int oldHead  = atomicExchange(hashHeads[hashCell], int(idx));
+    photonNext[int(idx)] = oldHead;
+
+    photons[int(idx)].position = pos; photons[int(idx)].pad0 = 0.0;
+    photons[int(idx)].power    = power; photons[int(idx)].pad1 = 0.0;
+    photons[int(idx)].dir      = dir; photons[int(idx)].pad2 = 0.0;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (int(gid) >= u_photonCount || u_lightCount == 0) return;
+
+    uint seed = initSeed(gid);
+
+    // ── Select light by CDF ───────────────────────────────────────────────────
+    float u = rand(seed);
+    int selected = u_lightCount - 1;
+    for (int i = 0; i < u_lightCount; i++) {
+        if (u < lights[i].cdfWeight) { selected = i; break; }
+    }
+    Light light = lights[selected];
+
+    // ── Sample a point on the selected triangle ───────────────────────────────
+    float r1 = rand(seed), r2 = rand(seed);
+    if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+    vec3 samplePos = light.v0 + r1*(light.v1 - light.v0) + r2*(light.v2 - light.v0);
+
+    // Cosine-weighted direction around the emission normal
+    vec3 emitNormal = normalize(light.normal);
+    vec3 emitDir    = cosineHemisphere(rand2(seed), emitNormal);
+
+    // ── Per-photon power (colour-preserving, power-normalized) ────────────────
+    // Power direction = emission color; magnitude = totalLightPower / N_photons.
+    float lum = dot(light.emission, vec3(0.299, 0.587, 0.114));
+    vec3 photonPower = (lum > 1e-6)
+        ? (light.emission / lum) * (u_totalLightPower / float(u_photonCount))
+        : vec3(u_totalLightPower / float(u_photonCount));
+
+    // ── Trace photon through scene ────────────────────────────────────────────
+    // Only store at diffuse hit after >=1 specular bounce (caustics only).
+    // Direct light→diffuse paths are handled by the path tracer.
+    vec3 ro = samplePos + emitNormal * 1e-3;
+    vec3 rd = emitDir;
+    bool hasSpecularBounce = false;
+
+    const int MAX_BOUNCES = 8;
+    for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+        HitRecord hit = traverseBVH(ro, rd);
+        if (!hit.valid) break;
+
+        Material mat = materials[hit.matIndex];
+        // Consistent normal facing the incoming photon
+        vec3 n = dot(rd, hit.normal) < 0.0 ? hit.normal : -hit.normal;
+
+        // ── Refractive (glass) ────────────────────────────────────────────────
+        if (mat.transmission > 0.5) {
+            bool entering  = dot(rd, hit.normal) < 0.0;
+            float eta      = entering ? (1.0 / mat.ior) : mat.ior;
+            float cosI     = abs(dot(rd, n));
+            float F        = fresnelSchlick(cosI, mat.ior);
+
+            if (rand(seed) < F) {
+                rd = reflect(rd, n);
+            } else {
+                vec3 refracted = refract(rd, n, eta);
+                // Total internal reflection fallback
+                if (dot(refracted, refracted) < 0.001) refracted = reflect(rd, n);
+                rd = normalize(refracted);
+            }
+            ro = hit.pos + rd * 2e-3;
+            hasSpecularBounce = true;
+            continue;
+        }
+
+        // ── Metal (mirror-like reflection) ────────────────────────────────────
+        if (mat.metallic > 0.5) {
+            photonPower *= mat.albedo;
+            rd = reflect(rd, n);
+            ro = hit.pos + n * 2e-3;
+            hasSpecularBounce = true;
+            continue;
+        }
+
+        // ── Diffuse surface ───────────────────────────────────────────────────
+        // Store only caustic photons (came via at least one specular bounce).
+        if (hasSpecularBounce) {
+            storePhoton(hit.pos, photonPower, rd);
+        }
+        // Stop tracing this photon regardless — diffuse surfaces scatter uniformly
+        // and subsequent bounces contribute negligible caustic energy.
+        break;
+    }
+}

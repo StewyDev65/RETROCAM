@@ -9,14 +9,18 @@ uniform vec3  u_camPos;
 uniform vec3  u_camRight;
 uniform vec3  u_camUp;
 uniform vec3  u_camForward;
-uniform float u_focalDist;
+uniform float u_focalDist;       // IIR-filtered focal distance (from TemporalState)
 uniform float u_lensRadius;
 uniform float u_fovTanHalf;
 uniform int   u_apertureBlades;
 uniform ivec2 u_resolution;
-uniform int   u_frameIndex;   // 0 = first sample, clears accumulation
+uniform int   u_frameIndex;      // 0 = first sample, clears accumulation
 
-// ── Temporal (Phase 7 will wire these; Phase 3 uses defaults) ─────────────────
+// ── Phase 4 optical uniforms ──────────────────────────────────────────────────
+uniform float u_saStrength;      // Spherical aberration strength (default 0.04)
+uniform vec3  u_lcaDelta;        // LCA focal offsets for R, G, B (e.g. -0.002, 0.0, +0.003)
+
+// ── Temporal uniforms ─────────────────────────────────────────────────────────
 uniform float u_agcGain;
 uniform float u_time;
 uniform float u_tapeAge;
@@ -44,7 +48,7 @@ struct Material {
     vec3  albedo;          float metallic;
     vec3  emission;        float emissionStrength;
     float roughness;       float ior; float transmission; int albedoTex;
-    float p0; float p1; float p2; float p3;  // padding
+    float p0; float p1; float p2; float p3;
 };
 
 layout(std430, binding = 0) readonly buffer TriBuffer  { Triangle  triangles[]; };
@@ -52,7 +56,6 @@ layout(std430, binding = 1) readonly buffer BVHBuffer  { BVHNode   nodes[];     
 layout(std430, binding = 2) readonly buffer MatBuffer  { Material  materials[]; };
 
 // ── PCG hash RNG ──────────────────────────────────────────────────────────────
-// State is advanced per-call so each rand() call gives a unique value.
 
 uint pcg(inout uint state) {
     state = state * 747796405u + 2891336453u;
@@ -66,10 +69,11 @@ float rand(inout uint state) {
 
 vec2 rand2(inout uint state) { return vec2(rand(state), rand(state)); }
 
+// Each channel gets an independent seed to ensure uncorrelated Monte Carlo samples.
+// Multiplying frameIndex by 3 ensures no seed aliasing between channels across frames.
 uint initSeed(ivec2 pixel, int frame) {
-    // Scramble pixel and frame together with a good hash
     uint s = uint(pixel.x + pixel.y * 7919 + frame * 6271);
-    pcg(s); pcg(s);  // warm up
+    pcg(s); pcg(s);
     return s;
 }
 
@@ -105,7 +109,8 @@ bool intersectTriangle(vec3 ro, vec3 rd, int idx, out float t, out vec2 bary) {
     return true;
 }
 
-// ── BVH traversal — returns closest hit ───────────────────────────────────────
+// ── BVH traversal ─────────────────────────────────────────────────────────────
+
 struct HitRecord {
     bool  valid;
     float t;
@@ -121,38 +126,34 @@ HitRecord traverseBVH(vec3 ro, vec3 rd) {
 
     vec3 invRd = 1.0 / rd;
 
-    int stack[32];
+    int stack[64];
     int top = 0;
     stack[top++] = 0;
 
     while (top > 0) {
-        int    idx  = stack[--top];
+        int     idx  = stack[--top];
         BVHNode node = nodes[idx];
 
         float aabbT;
         if (!intersectAABB(ro, invRd, node.aabbMin, node.aabbMax, aabbT))
             continue;
-        if (aabbT > rec.t) continue;   // already have a closer hit
+        if (aabbT > rec.t) continue;
 
         if (node.primCount > 0) {
-            // Leaf — test all triangles in this leaf
             for (int i = node.primStart; i < node.primStart + node.primCount; i++) {
                 float t; vec2 bary;
                 if (intersectTriangle(ro, rd, i, t, bary) && t < rec.t) {
                     rec.t    = t;
                     rec.pos  = ro + rd * t;
-
-                    // Interpolate normal: bary = (u,v), w = 1-u-v
                     Triangle tri = triangles[i];
                     float w = 1.0 - bary.x - bary.y;
-                    rec.normal = normalize(tri.n0 * w + tri.n1 * bary.x + tri.n2 * bary.y);
-
+                    rec.normal   = normalize(tri.n0 * w + tri.n1 * bary.x + tri.n2 * bary.y);
                     rec.matIndex = tri.matIndex;
                     rec.valid    = true;
                 }
             }
         } else {
-            if (top < 30) {
+            if (top < 62) {
                 stack[top++] = node.rightChild;
                 stack[top++] = node.leftChild;
             }
@@ -163,15 +164,11 @@ HitRecord traverseBVH(vec3 ro, vec3 rd) {
 
 // ── Sampling helpers ──────────────────────────────────────────────────────────
 
-// Cosine-weighted hemisphere sample (returns world-space direction).
-// For Lambertian: throughput *= albedo (the cosine and π cancel with the PDF).
 vec3 sampleCosineHemisphere(vec2 u, vec3 n) {
     float r   = sqrt(u.x);
     float phi = 6.28318530718 * u.y;
-    // Local tangent-space direction
     vec3 local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u.x)));
 
-    // Build ONB aligned with n
     vec3 up = abs(n.y) < 0.9999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 t  = normalize(cross(up, n));
     vec3 b  = cross(n, t);
@@ -179,7 +176,8 @@ vec3 sampleCosineHemisphere(vec2 u, vec3 n) {
     return normalize(mat3(t, b, n) * local);
 }
 
-// Sample a point on a regular N-gon (triangle fan method).
+// Sample a point uniformly on a regular N-gon using triangle fan decomposition.
+// This produces N-bladed bokeh exactly matching physical aperture polygons.
 vec2 sampleNGon(inout uint seed, float radius, int N) {
     float r1 = rand(seed), r2 = rand(seed);
     if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
@@ -193,34 +191,54 @@ vec2 sampleNGon(inout uint seed, float radius, int N) {
     return (r1 * v0 + r2 * v1) * radius;
 }
 
-// ── Thin-lens ray generation ──────────────────────────────────────────────────
+// ── Thin-lens ray generation with SA + LCA support ───────────────────────────
+//
+// focalDistOffset: added to u_focalDist for longitudinal CA.
+//   Pass u_lcaDelta.r / .g / .b for the three channel sub-traces.
+//
+// Spherical Aberration:
+//   Real lenses focus marginal rays (passing through the lens edge) at a
+//   slightly shorter distance than paraxial rays (near the center).
+//   We model this by increasing the effective focal distance proportionally
+//   to the squared normalised aperture radius of the lens sample.
+//   normalizedR2 ∈ [0,1]: 0 = on-axis (no SA), 1 = full aperture (max SA).
 
 struct Ray { vec3 origin; vec3 dir; };
 
-Ray generateRay(ivec2 pixel, inout uint seed) {
+Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset) {
     float aspect = float(u_resolution.x) / float(u_resolution.y);
 
-    // Jittered pixel center (anti-aliasing sub-pixel offset)
+    // Jittered sub-pixel for anti-aliasing
     vec2 jitter  = rand2(seed) - 0.5;
     vec2 ndcUV   = (vec2(pixel) + vec2(0.5) + jitter) / vec2(u_resolution);
-    vec2 screen  = ndcUV * 2.0 - 1.0;  // [-1, 1]
+    vec2 screen  = ndcUV * 2.0 - 1.0;
 
-    // Pinhole ray direction (world space)
+    // Pinhole (paraxial) ray direction
     vec3 pinholeDir = normalize(
         u_camForward
         + u_camRight * (screen.x * aspect * u_fovTanHalf)
         + u_camUp    * (screen.y          * u_fovTanHalf)
     );
 
-    // Focal plane intersection (plane perpendicular to camForward at focalDist)
-    float tFocal   = u_focalDist / dot(pinholeDir, u_camForward);
-    vec3  focalPt  = u_camPos + pinholeDir * tFocal;
-
-    // Lens sample (DoF)
+    // Lens sample — determines DoF and bokeh shape
     vec2 lensSample = (u_lensRadius > 0.0)
         ? sampleNGon(seed, u_lensRadius, u_apertureBlades)
         : vec2(0.0);
 
+    // ── Spherical Aberration ──────────────────────────────────────────────────
+    // Compute normalised squared aperture radius of this sample [0, 1].
+    // Edge rays (normalizedR2 = 1) get shifted focal distance by u_saStrength.
+    float normalizedR2 = (u_lensRadius > 1e-6)
+        ? clamp(dot(lensSample, lensSample) / (u_lensRadius * u_lensRadius), 0.0, 1.0)
+        : 0.0;
+    float effectiveFocalDist = u_focalDist + focalDistOffset + u_saStrength * normalizedR2;
+    effectiveFocalDist = max(effectiveFocalDist, 0.01); // guard against negative focal dist
+
+    // Project pinhole ray to the focal plane
+    float tFocal  = effectiveFocalDist / dot(pinholeDir, u_camForward);
+    vec3  focalPt = u_camPos + pinholeDir * tFocal;
+
+    // Final ray from lens sample point toward focal point
     vec3 rayOrigin = u_camPos
         + u_camRight * lensSample.x
         + u_camUp    * lensSample.y;
@@ -243,60 +261,132 @@ vec3 traceRadiance(Ray ray, inout uint seed) {
         HitRecord hit = traverseBVH(ro, rd);
 
         if (!hit.valid) {
-            // Ray escaped — simple sky gradient
-            float skyT  = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
-            vec3  sky   = mix(vec3(0.05, 0.05, 0.08), vec3(0.1, 0.15, 0.25), skyT);
-            radiance   += throughput * sky * 0.0; // black sky for enclosed Cornell box
+            // Black sky for enclosed Cornell box; replace with sky HDR in later phases
             break;
         }
 
         Material mat = materials[hit.matIndex];
 
-        // Two-sided shading: flip normal to face the incoming ray
+        // Two-sided shading — flip normal to face incoming ray
         vec3 n = dot(rd, hit.normal) < 0.0 ? hit.normal : -hit.normal;
 
-        // Emission contribution
+        // Emission
         radiance += throughput * mat.emission * mat.emissionStrength;
 
-        // Russian roulette path termination (after bounce 3)
+        // Russian roulette termination after bounce 3
         if (bounce >= 3) {
             float survive = max(mat.albedo.r, max(mat.albedo.g, mat.albedo.b));
+            if (mat.metallic > 0.5 || mat.transmission > 0.5) survive = 0.95;
             survive = clamp(survive, 0.01, 0.95);
             if (rand(seed) > survive) break;
             throughput /= survive;
         }
 
-        // Lambertian diffuse bounce
-        // BRDF = albedo/π, PDF = cosθ/π → weight = albedo (cosine/π cancel)
-        rd          = sampleCosineHemisphere(rand2(seed), n);
-        throughput *= mat.albedo;
+        // ── BSDF selection ────────────────────────────────────────────────────
+        if (mat.transmission > 0.5) {
+            // ── Glass: Fresnel-weighted reflection / refraction ───────────────
+            bool entering = dot(rd, hit.normal) < 0.0;
+            float eta     = entering ? (1.0 / mat.ior) : mat.ior;
+            float cosI    = abs(dot(rd, n));
+            float r0      = (1.0 - mat.ior) / (1.0 + mat.ior); r0 *= r0;
+            float F       = r0 + (1.0 - r0) * pow(clamp(1.0 - cosI, 0.0, 1.0), 5.0);
 
-        // Offset origin along shading normal to prevent self-intersection
-        ro = hit.pos + n * 1e-3;
+            if (rand(seed) < F) {
+                // Reflect
+                rd = reflect(rd, n);
+                ro = hit.pos + rd * 2e-3;
+            } else {
+                // Refract
+                vec3 refracted = refract(rd, n, eta);
+                if (dot(refracted, refracted) < 0.001) refracted = reflect(rd, n); // TIR
+                rd = normalize(refracted);
+                ro = hit.pos + rd * 2e-3;
+            }
+            throughput *= mat.albedo; // tint (white for clear glass)
+
+        } else if (mat.metallic > 0.5) {
+            // ── Metal: glossy reflection with roughness perturbation ──────────
+            vec3 reflected = reflect(rd, n);
+            if (mat.roughness > 0.001) {
+                // Perturb reflected direction by roughness
+                vec3 up2 = abs(reflected.y) < 0.9999 ? vec3(0,1,0) : vec3(1,0,0);
+                vec3 t2  = normalize(cross(up2, reflected));
+                vec3 b2  = cross(reflected, t2);
+                vec2 rnd = rand2(seed);
+                float r2  = mat.roughness * sqrt(rnd.x);
+                float phi2 = 6.28318530718 * rnd.y;
+                vec3 perturb = r2 * (cos(phi2)*t2 + sin(phi2)*b2);
+                reflected = normalize(reflected + perturb);
+                if (dot(reflected, n) < 0.0) reflected = reflect(rd, n);
+            }
+            rd = reflected;
+            ro = hit.pos + n * 2e-3;
+            throughput *= mat.albedo;
+
+        } else {
+            // ── Lambertian diffuse ────────────────────────────────────────────
+            rd          = sampleCosineHemisphere(rand2(seed), n);
+            throughput *= mat.albedo;
+            ro = hit.pos + n * 1e-3;
+        }
     }
 
     return radiance;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+//
+// Longitudinal CA implementation:
+//   Three independent path traces are executed per pixel per frame — one for
+//   each colour channel — each with a different focal distance offset from
+//   u_lcaDelta. This correctly models how real lenses focus different
+//   wavelengths at different depths (chromatic focal shift). The R, G, B
+//   results are written into the respective channels of the accumulation
+//   buffer and averaged across all frames by the display pass.
+//
+//   Each channel uses a seeded independently from the others (frame * 3 + ch)
+//   to ensure uncorrelated Monte Carlo samples and avoid structured noise.
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, u_resolution))) return;
 
-    uint seed = initSeed(pixel, u_frameIndex);
+    vec3 radiance;
 
-    Ray  ray      = generateRay(pixel, seed);
-    vec3 radiance = traceRadiance(ray, seed);
+    // Skip triple-trace when LCA deltas are negligible.
+    // The spec requires 3 sub-passes for longitudinal CA — this preserves
+    // that fully when active, and collapses to 1 pass when the effect is off.
+    bool lcaActive = (abs(u_lcaDelta.r) + abs(u_lcaDelta.b)) > 1e-4;
 
-    // Guard against NaN/Inf from degenerate geometry
+    if (lcaActive) {
+        // Full R3 spec: independent per-channel seeds to avoid correlated noise
+        uint seedR = initSeed(pixel, u_frameIndex * 3 + 0);
+        uint seedG = initSeed(pixel, u_frameIndex * 3 + 1);
+        uint seedB = initSeed(pixel, u_frameIndex * 3 + 2);
+
+        Ray rayR = generateRay(pixel, seedR, u_lcaDelta.r);
+        float radR = traceRadiance(rayR, seedR).r;
+
+        Ray rayG = generateRay(pixel, seedG, u_lcaDelta.g);
+        float radG = traceRadiance(rayG, seedG).g;
+
+        Ray rayB = generateRay(pixel, seedB, u_lcaDelta.b);
+        float radB = traceRadiance(rayB, seedB).b;
+
+        radiance = vec3(radR, radG, radB);
+    } else {
+        // Single trace — LCA is off, no need for per-channel focal separation
+        uint seed = initSeed(pixel, u_frameIndex);
+        Ray ray = generateRay(pixel, seed, 0.0);
+        radiance = traceRadiance(ray, seed);
+    }
+
+    // Guard against degenerate geometry producing non-finite values
     if (any(isnan(radiance)) || any(isinf(radiance))) radiance = vec3(0.0);
 
     if (u_frameIndex == 0) {
-        // First frame: overwrite (clears any stale data)
         imageStore(u_accumBuffer, pixel, vec4(radiance, 1.0));
     } else {
-        // Subsequent frames: accumulate running sum
         vec4 prev = imageLoad(u_accumBuffer, pixel);
         imageStore(u_accumBuffer, pixel, prev + vec4(radiance, 1.0));
     }

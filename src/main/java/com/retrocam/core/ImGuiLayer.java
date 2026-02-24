@@ -11,24 +11,25 @@ import imgui.type.ImBoolean;
 /**
  * Owns the ImGui context and renders the RetroCam settings panel.
  *
- * Add new controls here as each rendering phase is implemented.
- * Every setting mirrors a field in {@link RenderSettings} — the two
- * classes are intentionally kept in 1-to-1 correspondence.
+ * Phase 4 additions (Camera & Optics section):
+ *   LCA Red delta   — focal shift for the red channel (negative = nearer focus)
+ *   LCA Blue delta  — focal shift for the blue channel (positive = farther focus)
+ *   Green is treated as the reference channel (delta = 0) and is shown read-only.
  */
 public final class ImGuiLayer {
 
     private final ImGuiImplGlfw imGuiGlfw = new ImGuiImplGlfw();
     private final ImGuiImplGl3  imGuiGl3  = new ImGuiImplGl3();
 
-    // Reusable ImGui value holders (avoids allocation per-frame)
     private final ImBoolean boolBuf  = new ImBoolean();
     private final float[]   floatBuf = new float[1];
     private final int[]     intBuf   = new int[1];
 
-    // Live stats (set by Main each frame)
     private int   iterationCount;
     private float samplesPerSecond;
     private float agcGain;
+    private float sppmSearchRadius;
+    private int   sppmIteration;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -54,11 +55,6 @@ public final class ImGuiLayer {
         ImGui.newFrame();
     }
 
-    /**
-     * Renders all settings panels and writes chosen values back into
-     * {@code settings}. Call between {@link #beginFrame()} and
-     * {@link #endFrame()}.
-     */
     public void render(RenderSettings settings) {
         renderStatsOverlay();
         renderMainPanel(settings);
@@ -71,7 +67,6 @@ public final class ImGuiLayer {
 
     // ── Stats overlay ─────────────────────────────────────────────────────────
 
-    /** Transparent overlay in the top-left corner for render statistics. */
     private void renderStatsOverlay() {
         int flags = ImGuiWindowFlags.NoDecoration
                   | ImGuiWindowFlags.AlwaysAutoResize
@@ -119,7 +114,7 @@ public final class ImGuiLayer {
                 s.focalLengthMm = floatBuf[0];
 
             floatBuf[0] = s.apertureFStop;
-            if (ImGui.sliderFloat("Aperture f/stop", floatBuf, 1.0f, 22.0f))
+            if (ImGui.sliderFloat("Aperture f/stop", floatBuf, 0.2f, 22.0f))
                 s.apertureFStop = floatBuf[0];
 
             floatBuf[0] = s.focusDistM;
@@ -130,17 +125,40 @@ public final class ImGuiLayer {
             if (ImGui.sliderInt("Aperture Blades", intBuf, 3, 8))
                 s.aperatureBlades = intBuf[0];
 
-            floatBuf[0] = s.saStrength;
-            if (ImGui.sliderFloat("Spherical Aberration", floatBuf, 0f, 0.2f))
-                s.saStrength = floatBuf[0];
-
             floatBuf[0] = s.afSpeed;
             if (ImGui.sliderFloat("AF Speed (1/s)", floatBuf, 0.5f, 10f))
                 s.afSpeed = floatBuf[0];
+
+            ImGui.separator();
+            ImGui.text("Spherical Aberration");
+
+            floatBuf[0] = s.saStrength;
+            if (ImGui.sliderFloat("SA Strength (m)", floatBuf, 0f, 0.3f))
+                s.saStrength = floatBuf[0];
+
+            ImGui.separator();
+            // Longitudinal CA — Red and Blue deltas; Green is the reference (0).
+            // Negative = channel focuses nearer than green; Positive = farther.
+            ImGui.text("Longitudinal CA (focal offset, m)");
+
+            floatBuf[0] = s.lcaDelta[0];
+            if (ImGui.sliderFloat("LCA Red", floatBuf, -0.02f, 0.02f))
+                s.lcaDelta[0] = floatBuf[0];
+
+            // Green is always the reference; displayed as read-only.
+            ImGui.text("  LCA Green  :  0.000 (reference)");
+
+            floatBuf[0] = s.lcaDelta[2];
+            if (ImGui.sliderFloat("LCA Blue", floatBuf, -0.02f, 0.02f))
+                s.lcaDelta[2] = floatBuf[0];
         }
 
         // ── SPPM ──────────────────────────────────────────────────────────────
         if (ImGui.collapsingHeader("SPPM Caustics")) {
+            boolBuf.set(s.sppmEnabled);
+            if (ImGui.checkbox("Enable SPPM Caustics", boolBuf)) s.sppmEnabled = boolBuf.get();
+
+            if (s.sppmEnabled) {
             intBuf[0] = s.photonsPerIter / 1000;
             if (ImGui.sliderInt("Photons/iter (x1000)", intBuf, 10, 2000))
                 s.photonsPerIter = intBuf[0] * 1000;
@@ -153,6 +171,10 @@ public final class ImGuiLayer {
             floatBuf[0] = s.sppmAlpha;
             if (ImGui.sliderFloat("Alpha", floatBuf, 0.5f, 1.0f))
                 s.sppmAlpha = floatBuf[0];
+
+            ImGui.text(String.format("  Search radius : %.5f m", sppmSearchRadius));
+            ImGui.text(String.format("  Iteration     : %d",     sppmIteration));
+            }
         }
 
         // ── AGC / Temporal ────────────────────────────────────────────────────
@@ -240,11 +262,16 @@ public final class ImGuiLayer {
         return boolBuf.get();
     }
 
-    // ── Stats setters (called by Main) ────────────────────────────────────────
+    // ── Stats setters ─────────────────────────────────────────────────────────
 
     public void setStats(int iterations, float samplesPerSec, float gain) {
         this.iterationCount   = iterations;
         this.samplesPerSecond = samplesPerSec;
         this.agcGain          = gain;
+    }
+
+    public void setSppmStats(float searchRadius, int iteration) {
+        this.sppmSearchRadius = searchRadius;
+        this.sppmIteration    = iteration;
     }
 }

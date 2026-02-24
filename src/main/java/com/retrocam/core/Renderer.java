@@ -10,13 +10,9 @@ import static org.lwjgl.opengl.GL43.*;
 /**
  * Manages the progressive path-tracing accumulation loop.
  *
- * Each call to {@link #render} dispatches {@code pathtrace.comp} for one sample
- * per pixel, adding to the running sum stored in the {@code GL_RGBA32F}
- * accumulation texture. The display shader divides by {@code totalSamples}
- * to produce the current average.
- *
- * Call {@link #reset()} whenever the camera or scene changes to restart
- * the accumulation from scratch.
+ * Phase 4: {@link #render} now accepts {@link TemporalState} and passes it
+ * to {@link ThinLensCamera#uploadTo} so the IIR-filtered focal distance is
+ * used for ray generation (auto-focus lag, R4).
  */
 public final class Renderer {
 
@@ -39,7 +35,9 @@ public final class Renderer {
 
     /**
      * Dispatches the path-trace compute shader for one sample-per-pixel pass.
-     * All SSBOs in {@code sceneUploader} must already be bound (caller's responsibility).
+     *
+     * @param temporal supplies the IIR-filtered focal distance and AGC gain.
+     *                 Must be updated by the caller before this is invoked.
      */
     public void render(SceneUploader sceneUploader,
                        OrbitCamera orbit,
@@ -49,17 +47,17 @@ public final class Renderer {
 
         pathTraceShader.bind();
 
-        // Bind accumulation image (READ_WRITE: shader reads prev, writes sum)
+        // Bind accumulation image (READ_WRITE)
         glBindImageTexture(0, accumTexture, 0, false, 0, GL_READ_WRITE, GL_RGBA32F);
 
-        // Camera uniforms
-        tlc.uploadTo(pathTraceShader, orbit, settings);
+        // Camera + optical uniforms (Phase 4: includes SA, LCA, IIR focal dist)
+        tlc.uploadTo(pathTraceShader, orbit, settings, temporal);
 
-        // Temporal uniforms
+        // Temporal uniforms (AGC gain, time, tape age, white balance)
         temporal.uploadTo(pathTraceShader, settings);
 
-        // Frame counters
-        pathTraceShader.setInt("u_frameIndex",   totalSamples);
+        // Frame counter (used as RNG seed multiplier in shader)
+        pathTraceShader.setInt("u_frameIndex", totalSamples);
         glUniform2i(glGetUniformLocation(pathTraceShader.id(), "u_resolution"),
                     RENDER_W, RENDER_H);
 
@@ -80,11 +78,6 @@ public final class Renderer {
 
     // ── Reset ─────────────────────────────────────────────────────────────────
 
-    /**
-     * Resets the accumulation — call whenever the camera or scene changes.
-     * Recreates the accumulation texture so stale data is never blended with
-     * the new viewpoint (avoids a GPU-side clear pass).
-     */
     public void reset() {
         if (accumTexture != 0) glDeleteTextures(accumTexture);
         accumTexture  = createAccumTexture();
@@ -93,7 +86,6 @@ public final class Renderer {
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
-    /** The accumulated sum texture; divide by {@link #getTotalSamples()} to display. */
     public int  getAccumTexture()  { return accumTexture;  }
     public int  getTotalSamples()  { return totalSamples;  }
 

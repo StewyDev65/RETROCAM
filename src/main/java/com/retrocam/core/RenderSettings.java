@@ -30,6 +30,7 @@ public final class RenderSettings {
     public float afSpeed         = 3.0f;    // auto-focus IIR speed (1/s)
 
     // ── SPPM (Phase 5) ────────────────────────────────────────────────────────
+    public boolean sppmEnabled    = true;
     public int   photonsPerIter   = 500_000;
     public float sppmInitRadius   = 0.05f;
     public float sppmAlpha        = 0.7f;
