@@ -67,7 +67,6 @@ public final class RenderSettings {
     // ── Post-process key values (Phase 6) ─────────────────────────────────────
     public float chromaResSigma      = 7.0f;
     public float timebaseAmplitudePx = 1.5f;
-    public float dropoutProbability  = 0.15f;
     public float edgeEnhanceAmount   = 1.5f;
     public float vignetteStrength    = 1.4f;
     public float tapeAge             = 0.3f;    // 0=mint, 1=damaged
@@ -101,6 +100,23 @@ public final class RenderSettings {
     // wobble component.  Noise component uses the same amplitude.
     public float timebaseFreq  = 0.02f;
     public float timebaseSpeed = 0.70f;
+
+    // ── Phase 6: p11 Dot Crawl ────────────────────────────────────────────────
+    // intensity:       amplitude of I/Q contamination at edges. 0.25 = mild, 1.0 = severe.
+    // subcarrierFreq:  normalized cycles/pixel matching VHS chroma BW (~0.14).
+    // edgeThresh:      luma gradient magnitude required to trigger dot crawl.
+    public float dotCrawlIntensity     = 0.25f;
+    public float dotCrawlSubcarrier    = 0.14f;
+    public float dotCrawlEdgeThresh    = 0.04f;
+
+    // ── Phase 6: p12 Tape Dropout ─────────────────────────────────────────────
+    // tapeAge (already declared above) controls frequency (0=mint, 1=worn).
+    // dropoutBright:   peak luma level of the dropout stripe (linear light).
+    public float dropoutBright        = 0.92f;
+
+    // dropoutBurstRate: fraction of video fields that carry dropout activity.
+    // 0.05 = rare isolated bursts; 0.5 = frequent; 1.0 = every field.
+    public float dropoutBurstRate    = 0.45f;
 
     // ── Phase 6: p03 Color Matrix ─────────────────────────────────────────────
     // colorTempBias:   -1 = cool (blue push), +1 = warm (amber push).

@@ -54,6 +54,8 @@ public final class PostProcessStack {
     private final PostProcessPass p08CcdSmear;    // vertical column overflow streak
     private final PostProcessPass p09ChromaBleed; // rightward chroma smear
     private final PostProcessPass p10Timebase;    // per-scanline horizontal jitter
+    private final PostProcessPass p11DotCrawl;    // NTSC dot crawl at luma edges
+    private final PostProcessPass p12Dropout;     // magnetic tape dropout streaks
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -75,6 +77,8 @@ public final class PostProcessStack {
         p08CcdSmear    = new PostProcessPass("p08_ccd_smear",    "/shaders/post/p08_ccd_smear.frag");
         p09ChromaBleed = new PostProcessPass("p09_chroma_bleed", "/shaders/post/p09_chroma_bleed.frag");
         p10Timebase    = new PostProcessPass("p10_timebase",     "/shaders/post/p10_timebase.frag");
+        p11DotCrawl  = new PostProcessPass("p11_dot_crawl",      "/shaders/post/p11_dot_crawl.frag");
+        p12Dropout   = new PostProcessPass("p12_dropout",        "/shaders/post/p12_dropout.frag");
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -199,7 +203,27 @@ public final class PostProcessStack {
             });
         }
 
-        // p11 – p19: not yet implemented – pass through
+        // p11 – NTSC dot crawl (chroma-subcarrier luma crosstalk at edges)
+        if (s.p11Enabled) {
+            current = swap(p11DotCrawl, current, sh -> {
+                sh.setFloat("u_intensity",      s.dotCrawlIntensity);
+                sh.setFloat("u_subcarrierFreq", s.dotCrawlSubcarrier);
+                sh.setFloat("u_edgeThresh",     s.dotCrawlEdgeThresh);
+                sh.setInt  ("u_frameIndex",     s.frameIndex);
+            });
+        }
+
+        // p12 – Magnetic tape dropout (random horizontal bright streaks)
+        if (s.p12Enabled) {
+            current = swap(p12Dropout, current, sh -> {
+                sh.setFloat("u_tapeAge",       s.tapeAge);
+                sh.setFloat("u_dropoutBright", s.dropoutBright);
+                sh.setInt  ("u_frameIndex",    s.frameIndex);
+                sh.setFloat("u_burstRate",     s.dropoutBurstRate);
+            });
+        }
+
+        // p13 – p19: not yet implemented – pass through
 
         return current;
     }
@@ -259,6 +283,8 @@ public final class PostProcessStack {
         p08CcdSmear.destroy();
         p09ChromaBleed.destroy();
         p10Timebase.destroy();
+        p11DotCrawl.destroy();
+        p12Dropout.destroy();
     }
 
     // ── Functional interface ───────────────────────────────────────────────────

@@ -364,20 +364,44 @@ public final class ImGuiLayer {
         if (ImGui.sliderFloat("TBE Speed (rad/s)##p10", floatBuf, 0f, 3f))
             s.timebaseSpeed = floatBuf[0];
 
-        // Legacy / other pass values
+        // p11 – Dot Crawl
+        boolBuf.set(s.p11Enabled);
+        if (ImGui.checkbox("##p11en", boolBuf)) s.p11Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p11  Dot Crawl");
+        floatBuf[0] = s.dotCrawlIntensity;
+        if (ImGui.sliderFloat("Intensity##p11", floatBuf, 0f, 1f))
+            s.dotCrawlIntensity = floatBuf[0];
+        floatBuf[0] = s.dotCrawlSubcarrier;
+        if (ImGui.sliderFloat("Subcarrier Freq (cyc/px)##p11", floatBuf, 0.05f, 0.4f))
+            s.dotCrawlSubcarrier = floatBuf[0];
+        floatBuf[0] = s.dotCrawlEdgeThresh;
+        if (ImGui.sliderFloat("Edge Threshold##p11", floatBuf, 0.005f, 0.2f))
+            s.dotCrawlEdgeThresh = floatBuf[0];
+
+        // p12 – Tape Dropout
+        boolBuf.set(s.p12Enabled);
+        if (ImGui.checkbox("##p12en", boolBuf)) s.p12Enabled = boolBuf.get();
+        ImGui.sameLine();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "p12  Tape Dropout");
+        floatBuf[0] = s.tapeAge;
+        if (ImGui.sliderFloat("Tape Age (0=mint)##p12", floatBuf, 0f, 1f))
+            s.tapeAge = floatBuf[0];
+        floatBuf[0] = s.dropoutBright;
+        if (ImGui.sliderFloat("Dropout Brightness##p12", floatBuf, 0.5f, 1.0f))
+            s.dropoutBright = floatBuf[0];
+        floatBuf[0] = s.dropoutBurstRate;
+        if (ImGui.sliderFloat("Burst Frequency##p12", floatBuf, 0.01f, 1.0f))
+            s.dropoutBurstRate = floatBuf[0];
+
+        // Unimplemented pass placeholders (settings shown for future passes)
         ImGui.separator();
-        floatBuf[0] = s.dropoutProbability;
-        if (ImGui.sliderFloat("Dropout Probability##p12", floatBuf, 0f, 1f))
-            s.dropoutProbability = floatBuf[0];
         floatBuf[0] = s.edgeEnhanceAmount;
         if (ImGui.sliderFloat("Edge Enhance Amount##p15", floatBuf, 0f, 4f))
             s.edgeEnhanceAmount = floatBuf[0];
         floatBuf[0] = s.vignetteStrength;
         if (ImGui.sliderFloat("Vignette Strength##p17", floatBuf, 0f, 3f))
             s.vignetteStrength = floatBuf[0];
-        floatBuf[0] = s.tapeAge;
-        if (ImGui.sliderFloat("Tape Age (0=mint)##p12", floatBuf, 0f, 1f))
-            s.tapeAge = floatBuf[0];
         floatBuf[0] = s.trackingSeverity;
         if (ImGui.sliderFloat("Tracking Severity##p14", floatBuf, 0f, 1f))
             s.trackingSeverity = floatBuf[0];
