@@ -2,6 +2,7 @@ package com.retrocam.core;
 
 import com.retrocam.camera.OrbitCamera;
 import com.retrocam.camera.ThinLensCamera;
+import com.retrocam.camera.CameraView;
 import com.retrocam.gl.ShaderProgram;
 import com.retrocam.scene.SceneUploader;
 
@@ -63,7 +64,7 @@ public final class Renderer {
      *                 Must be updated by the caller before this is invoked.
      */
     public void render(SceneUploader sceneUploader,
-                       OrbitCamera orbit,
+                       CameraView orbit,
                        ThinLensCamera tlc,
                        TemporalState temporal,
                        RenderSettings settings) {

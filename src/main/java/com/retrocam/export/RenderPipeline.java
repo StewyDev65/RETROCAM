@@ -45,12 +45,12 @@ public final class RenderPipeline {
     private String errorMessage  = "";
 
     // ── GPU resources ─────────────────────────────────────────────────────────
-    private int              lastOutputTexId  = -1;
-    private Framebuffer      exportDisplayFbo = null; // display-pass FBO for export
+    private int         lastOutputTexId  = -1;
+    private Framebuffer exportDisplayFbo = null;
 
     // ── Per-job workers ───────────────────────────────────────────────────────
-    private FrameExporter  frameExporter;
-    private VideoExporter  videoExporter;
+    private FrameExporter frameExporter;
+    private VideoExporter videoExporter;
 
     /**
      * Dedicated temporal state for video rendering.
@@ -75,7 +75,6 @@ public final class RenderPipeline {
             RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT);
         this.videoExporter = new VideoExporter();
 
-        // Display-pass FBO: RGBA8 matches typical display output
         if (exportDisplayFbo == null) {
             exportDisplayFbo = new Framebuffer(
                 RenderSettings.RENDER_WIDTH, RenderSettings.RENDER_HEIGHT, GL_RGBA8);
@@ -103,11 +102,10 @@ public final class RenderPipeline {
     }
 
     /**
-     * Ticks the pipeline by one step (one complete rendered frame for video,
-     * or the full photo render for photo). Must be called from the GL thread
-     * each main-loop iteration while {@link #isRunning()} is true.
+     * Ticks the pipeline by one step. Must be called from the GL thread each
+     * main-loop iteration while {@link #isRunning()} is true.
      *
-     * @return GL texture ID of the last rendered frame (pass to display blit), or -1
+     * @return GL texture ID of the last rendered frame, or -1
      */
     public int tick(RenderContext ctx, float wallDt) {
         if (!isRunning()) return lastOutputTexId;
@@ -157,8 +155,18 @@ public final class RenderPipeline {
 
         applyKeyframes(canonicalTime, ctx);
 
-        // Advance video-mode temporal by one canonical frame period
-        ctx.settings.focusDistM = ctx.settings.focusDistM; // target unchanged unless keyframed
+        // Evaluate free camera at canonical frame time if active
+        if (ctx.settings.freeCamActive && ctx.freeCamera.hasAnimation()) {
+            float animTime = ctx.settings.freeCamStartTime
+                + canonicalTime * ctx.settings.freeCamPlaybackSpeed;
+            ctx.freeCamera.positionScale          = ctx.settings.freeCamPositionScale;
+            ctx.freeCamera.applyZoomToFocalLength = ctx.settings.freeCamApplyZoom;
+            ctx.freeCamera.evaluateAtTime(animTime, ctx.settings);
+            ctx.activeCamera = ctx.freeCamera;
+        } else {
+            ctx.activeCamera = ctx.orbitCamera;
+        }
+
         videoTemporal.setFocalDistTarget(ctx.settings.focusDistM);
         videoTemporal.updateForVideoFrame(canonicalTime, frameDt, ctx.settings);
 
@@ -190,7 +198,7 @@ public final class RenderPipeline {
             statusMessage = "Done → " + job.getFullOutputPath();
             System.out.println("[RenderPipeline] Video complete: " + job.getFullOutputPath());
         } catch (VideoExporter.VideoEncodeException e) {
-            state         = State.COMPLETE; // image sequence is still present
+            state         = State.COMPLETE;
             statusMessage = "Warning: " + e.getMessage();
             System.err.println("[RenderPipeline] Encode warning: " + e.getMessage());
         }
@@ -207,17 +215,16 @@ public final class RenderPipeline {
             if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0)
                 ctx.sppmManager.tracePhotons(ctx.sceneUploader, ctx.settings);
 
-            ctx.renderer.render(ctx.sceneUploader, ctx.camera, ctx.thinLens, temporal, ctx.settings);
+            ctx.renderer.render(ctx.sceneUploader, ctx.activeCamera, ctx.thinLens, temporal, ctx.settings);
 
             if (ctx.settings.sppmEnabled && ctx.sceneUploader.getLightCount() > 0) {
                 ctx.sppmManager.gatherRadiance(
-                    ctx.sceneUploader, ctx.camera,
+                    ctx.sceneUploader, ctx.activeCamera,
                     ctx.renderer.getAccumTexture(), ctx.settings, ctx.renderer.getTotalSamples());
                 ctx.sppmManager.updateRadius(ctx.settings.sppmAlpha);
             }
         }
 
-        // Post-process chain
         int postTexId = ctx.postStack.runOnAccum(
             ctx.renderer.getAccumTexture(),
             ctx.renderer.getGBufferTexture(),
@@ -226,18 +233,13 @@ public final class RenderPipeline {
             ctx.settings,
             temporal);
 
-        // Apply display shader (ACES + gamma) so exported pixel values match screen
         lastOutputTexId = applyDisplayPass(postTexId, ctx);
     }
 
     // ── Display pass ──────────────────────────────────────────────────────────
 
-    /**
-     * Blits the post-stack result through the display shader (ACES + gamma)
-     * into an offscreen FBO. The exported image then matches the screen exactly.
-     */
     private int applyDisplayPass(int postTexId, RenderContext ctx) {
-        exportDisplayFbo.bindForWrite(); // also sets viewport to RENDER_WIDTH x RENDER_HEIGHT
+        exportDisplayFbo.bindForWrite();
 
         ctx.displayShader.bind();
         glActiveTexture(GL_TEXTURE0);
@@ -258,20 +260,11 @@ public final class RenderPipeline {
 
     // ── Keyframe application ──────────────────────────────────────────────────
 
-    /**
-     * Applies all keyframe tracks at {@code time} and re-uploads the scene
-     * if any scene-object tracks were mutated.
-     *
-     * Camera changes set {@code camera.dirty = true} automatically via
-     * {@link com.retrocam.camera.OrbitCamera#setKeyframeableProperty}.
-     * Settings changes take effect immediately since they are read each pass.
-     */
     private void applyKeyframes(float time, RenderContext ctx) {
         if (job.keyframeTimeline == null) return;
 
         job.keyframeTimeline.apply(time);
 
-        // Scene-object mutations require a GPU re-upload before accumulation
         if (job.keyframeTimeline.hasSceneObjectTracks()) {
             ctx.sceneEditor.markDirty();
             ctx.sceneUploader.upload(ctx.sceneEditor.buildScene());
@@ -292,13 +285,13 @@ public final class RenderPipeline {
             || state == State.ERROR || state == State.CANCELLED;
     }
 
-    public float  getProgress()       { return totalFrames <= 0 ? 0f : (float) currentFrame / totalFrames; }
-    public int    getCurrentFrame()   { return currentFrame; }
-    public int    getTotalFrames()    { return totalFrames; }
-    public String getStatusMessage()  { return statusMessage; }
-    public String getErrorMessage()   { return errorMessage; }
-    public State  getState()          { return state; }
-    public int    getLastOutputTexId(){ return lastOutputTexId; }
+    public float  getProgress()        { return totalFrames <= 0 ? 0f : (float) currentFrame / totalFrames; }
+    public int    getCurrentFrame()    { return currentFrame; }
+    public int    getTotalFrames()     { return totalFrames; }
+    public String getStatusMessage()   { return statusMessage; }
+    public String getErrorMessage()    { return errorMessage; }
+    public State  getState()           { return state; }
+    public int    getLastOutputTexId() { return lastOutputTexId; }
 
     public void reset() {
         state           = State.IDLE;

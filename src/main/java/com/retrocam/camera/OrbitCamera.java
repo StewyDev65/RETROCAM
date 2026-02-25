@@ -21,7 +21,7 @@ import com.retrocam.keyframe.Keyframeable;
  * Matrices are provided via {@link #getViewMatrix()} and
  * {@link #getProjectionMatrix(float)}.
  */
-public final class OrbitCamera implements Keyframeable {
+public final class OrbitCamera implements CameraView, Keyframeable {
 
     // ── State ─────────────────────────────────────────────────────────────────
     private float theta   = (float)(Math.PI / 2.0); // face along -Z into the scene

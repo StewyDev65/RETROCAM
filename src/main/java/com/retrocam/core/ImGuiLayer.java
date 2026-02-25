@@ -82,6 +82,15 @@ public final class ImGuiLayer {
     private final imgui.type.ImFloat kfTimeEdit    = new imgui.type.ImFloat();
     private final imgui.type.ImFloat kfValueEdit   = new imgui.type.ImFloat();
 
+    // ── Motion import state ────────────────────────────────────────────────────
+    private com.retrocam.camera.FreeCamera freeCamera;
+    private final ImString hfcsFilePath = new ImString("", 512);
+    private String hfcsStatusMessage    = "";
+    private boolean hfcsStatusIsError   = false;
+    private final imgui.type.ImFloat bpEditX = new imgui.type.ImFloat();
+    private final imgui.type.ImFloat bpEditY = new imgui.type.ImFloat();
+    private final imgui.type.ImFloat bpEditZ = new imgui.type.ImFloat();
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     public void init(long windowHandle) {
@@ -111,6 +120,10 @@ public final class ImGuiLayer {
         imGuiGl3.dispose();
         imGuiGlfw.dispose();
         ImGui.destroyContext();
+    }
+
+    public void setFreeCamera(com.retrocam.camera.FreeCamera cam) {
+        this.freeCamera = cam;
     }
 
     // ── Per-frame ──────────────────────────────────────────────────────────────
@@ -175,6 +188,7 @@ public final class ImGuiLayer {
         renderPostToggleSection(s);
         renderPostValuesSection(s);
         renderStaticTestSection();
+        renderMotionImportSection(s);
 
         if (renderPipeline != null)
             renderExportSection(s);
@@ -280,6 +294,15 @@ public final class ImGuiLayer {
         }
 
         // ── Video settings ────────────────────────────────────────────────
+        if (s.freeCamActive && freeCamera != null && freeCamera.hasAnimation()) {
+            ImGui.textColored(0.4f, 1f, 0.4f, 1f, "Motion camera active — HFCS animation will drive render");
+            com.retrocam.camera.CameraAnimation anim = freeCamera.getAnimation();
+            ImGui.textDisabled(String.format("  %.2fs | %.0f fps | %d frames total",
+                anim.durationSeconds, anim.frameRate,
+                Math.round(s.exportDurationSec * s.exportFps)));
+            ImGui.spacing();
+        }
+
         if (fmt.isVideo) {
             ImGui.separator();
             ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "Video Settings");
@@ -1236,6 +1259,146 @@ public final class ImGuiLayer {
                     kfTimeline.removeTrackAt(i);
                 kfSelectedTrackIdx = -1;
             }
+        }
+    }
+
+    // ── Motion Import ──────────────────────────────────────────────────────────
+
+    private void renderMotionImportSection(RenderSettings s) {
+        if (!ImGui.collapsingHeader("Motion Import (HFCS)")) return;
+
+        boolean hasAnim = freeCamera != null && freeCamera.hasAnimation();
+
+        // ── File picker ───────────────────────────────────────────────────────
+        ImGui.textDisabled("HFCS File Path");
+        ImGui.setNextItemWidth(-80);
+        ImGui.inputText("##hfcsPath", hfcsFilePath);
+        ImGui.sameLine();
+        if (ImGui.button("Load##hfcsLoad")) {
+            loadHFCS(s);
+        }
+
+        if (!hfcsStatusMessage.isEmpty()) {
+            if (hfcsStatusIsError)
+                ImGui.textColored(1f, 0.4f, 0.4f, 1f, hfcsStatusMessage);
+            else
+                ImGui.textColored(0.4f, 1f, 0.4f, 1f, hfcsStatusMessage);
+        }
+
+        if (hasAnim) {
+            ImGui.sameLine();
+            if (ImGui.button("Use for Render##fcSync")) {
+                s.freeCamActive     = true;
+                s.exportDurationSec = freeCamera.getAnimation().durationSeconds;
+                s.exportFps         = freeCamera.getAnimation().frameRate;
+            }
+            if (ImGui.isItemHovered())
+                ImGui.setTooltip("Enables motion camera and sets export duration + FPS to match the animation.");
+        }
+
+        if (!hasAnim) {
+            ImGui.textDisabled("No animation loaded.");
+            return;
+        }
+
+        com.retrocam.camera.CameraAnimation anim = freeCamera.getAnimation();
+        ImGui.textDisabled(String.format("  %d samples | %.2fs | %.0f fps | %.1fmm base focal",
+            anim.sampleCount(), anim.durationSeconds, anim.frameRate,
+            anim.zoomToFocalMm(anim.frame0().zoomPx)));
+
+        ImGui.separator();
+        ImGui.spacing();
+
+        // ── Enable toggle ─────────────────────────────────────────────────────
+        boolBuf.set(s.freeCamActive);
+        if (ImGui.checkbox("Use Motion Camera##freeCamActive", boolBuf)) {
+            s.freeCamActive = boolBuf.get();
+            freeCamera.clearDirty(); // force dirty so accumulator resets
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "Playback");
+
+        // ── Position scale ────────────────────────────────────────────────────
+        floatBuf[0] = s.freeCamPositionScale;
+        if (ImGui.sliderFloat("Position Scale##fcScale", floatBuf, 0.001f, 1.0f, "%.4f"))
+            s.freeCamPositionScale = floatBuf[0];
+        if (ImGui.isItemHovered())
+            ImGui.setTooltip("Scales HitFilm pixel units to scene world units.\nIncrease if motion looks too subtle, decrease if too large.");
+
+        // ── Playback speed ────────────────────────────────────────────────────
+        floatBuf[0] = s.freeCamPlaybackSpeed;
+        if (ImGui.sliderFloat("Playback Speed##fcSpeed", floatBuf, 0.1f, 4.0f))
+            s.freeCamPlaybackSpeed = floatBuf[0];
+
+        // ── Start time offset ─────────────────────────────────────────────────
+        floatBuf[0] = s.freeCamStartTime;
+        if (ImGui.sliderFloat("Start Offset (s)##fcStart", floatBuf, 0f, anim.durationSeconds))
+            s.freeCamStartTime = floatBuf[0];
+
+        // ── Apply zoom to focal length ────────────────────────────────────────
+        boolBuf.set(s.freeCamApplyZoom);
+        if (ImGui.checkbox("Apply HFCS Zoom to Focal Length##fcZoom", boolBuf)) {
+            s.freeCamApplyZoom = boolBuf.get();
+            freeCamera.applyZoomToFocalLength = s.freeCamApplyZoom;
+        }
+
+        ImGui.spacing();
+        ImGui.separator();
+        ImGui.textColored(0.8f, 0.8f, 0.4f, 1f, "Base Position (frame 0 maps here)");
+
+        float[] bp = freeCamera.getBasePos();
+        bpEditX.set(bp[0]); bpEditY.set(bp[1]); bpEditZ.set(bp[2]);
+        boolean bpChanged = false;
+        ImGui.setNextItemWidth(100);
+        if (ImGui.inputFloat("X##bpx", bpEditX, 0, 0, "%.3f")) bpChanged = true;
+        ImGui.sameLine();
+        ImGui.setNextItemWidth(100);
+        if (ImGui.inputFloat("Y##bpy", bpEditY, 0, 0, "%.3f")) bpChanged = true;
+        ImGui.sameLine();
+        ImGui.setNextItemWidth(100);
+        if (ImGui.inputFloat("Z##bpz", bpEditZ, 0, 0, "%.3f")) bpChanged = true;
+
+        if (bpChanged)
+            freeCamera.setBasePosition(bpEditX.get(), bpEditY.get(), bpEditZ.get());
+
+        if (s.freeCamActive && freeCamera.hasAnimation()) {
+            float evalTime = s.freeCamStartTime + freeCamera.getCurrentTime();
+            ImGui.textDisabled(String.format("  t=%.3fs  →  eye (%.2f, %.2f, %.2f)",
+                evalTime,
+                freeCamera.getEyePosition()[0],
+                freeCamera.getEyePosition()[1],
+                freeCamera.getEyePosition()[2]));
+        }
+    }
+
+    private void loadHFCS(RenderSettings s) {
+        String path = hfcsFilePath.get().trim();
+        if (path.isEmpty()) {
+            hfcsStatusMessage = "Enter a file path first.";
+            hfcsStatusIsError = true;
+            return;
+        }
+        try {
+            com.retrocam.camera.CameraAnimation anim =
+                com.retrocam.io.HFCSImporter.load(path);
+            freeCamera.setAnimation(anim);
+            freeCamera.applyZoomToFocalLength = s.freeCamApplyZoom;
+            // Capture current scene camera as the base position + orientation
+            // (camera field was set via setCamera())
+            if (camera != null) {
+                freeCamera.setBaseFromOrbit(camera);
+            }
+            // Sync initial focal length from HFCS
+            if (s.freeCamApplyZoom) {
+                s.focalLengthMm = anim.zoomToFocalMm(anim.frame0().zoomPx);
+            }
+            hfcsStatusMessage = "Loaded \u2713 " + anim.sampleCount() + " samples";
+            hfcsStatusIsError = false;
+        } catch (com.retrocam.io.HFCSImporter.HFCSParseException e) {
+            hfcsStatusMessage = "Error: " + e.getMessage();
+            hfcsStatusIsError = true;
         }
     }
 

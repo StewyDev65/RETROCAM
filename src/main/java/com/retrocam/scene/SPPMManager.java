@@ -1,10 +1,19 @@
 package com.retrocam.scene;
 
+import com.retrocam.camera.CameraView;
 import com.retrocam.camera.OrbitCamera;
 import com.retrocam.camera.ThinLensCamera;
 import com.retrocam.core.RenderSettings;
 import com.retrocam.gl.ShaderProgram;
 
+import static org.lwjgl.opengl.GL15.GL_READ_WRITE;
+import static org.lwjgl.opengl.GL20.glGetUniformLocation;
+import static org.lwjgl.opengl.GL20.glUniform2i;
+import static org.lwjgl.opengl.GL30.GL_RGBA32F;
+import static org.lwjgl.opengl.GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+import static org.lwjgl.opengl.GL42.GL_TEXTURE_FETCH_BARRIER_BIT;
+import static org.lwjgl.opengl.GL42.glBindImageTexture;
+import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL43.*;
 
 /**
@@ -106,8 +115,8 @@ public final class SPPMManager {
      * @param settings        current render settings.
      * @param frameIndex      current accumulation frame counter (for RNG seed).
      */
-    public void gatherRadiance(SceneUploader sceneUploader, OrbitCamera camera,
-                               int accumTexture, RenderSettings settings, int frameIndex) {
+    public void gatherRadiance(SceneUploader sceneUploader, CameraView camera,
+                            int accumTexture, RenderSettings settings, int frameIndex) {
         photonGatherShader.bind();
 
         // Accumulation texture — same binding 0 image2D used by pathtrace.comp.

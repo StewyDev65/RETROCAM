@@ -198,6 +198,13 @@ public final class RenderSettings implements Keyframeable {
     public float  exportDurationSec     = 5.0f;
     public float  exportFps             = 29.97f;
 
+    // ── HFCS Motion Import ────────────────────────────────────────────────────────
+    public boolean freeCamActive         = false;   // true = FreeCamera drives render
+    public boolean freeCamApplyZoom      = true;    // apply HFCS zoom to focal length
+    public float   freeCamPositionScale  = 0.02f;   // HitFilm px → scene units
+    public float   freeCamPlaybackSpeed  = 1.0f;    // 1.0 = real-time, 0.5 = half speed
+    public float   freeCamStartTime      = 0.0f;    // seconds offset into the animation
+
     // ── Keyframeable ──────────────────────────────────────────────────────────────
 
     private static final String[] KF_NAMES = {

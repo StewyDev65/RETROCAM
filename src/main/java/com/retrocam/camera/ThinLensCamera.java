@@ -24,8 +24,8 @@ public final class ThinLensCamera {
      * @param temporal supplies the IIR-filtered focal distance and other
      *                 per-frame state so auto-focus lag affects ray generation.
      */
-    public void uploadTo(ShaderProgram shader, OrbitCamera orbit,
-                         RenderSettings s, TemporalState temporal) {
+    public void uploadTo(ShaderProgram shader, CameraView orbit,
+                     RenderSettings s, TemporalState temporal) {
         float[] eye     = orbit.getEyePosition();
         float[] right   = orbit.getCameraRight();
         float[] up      = orbit.getCameraUp();

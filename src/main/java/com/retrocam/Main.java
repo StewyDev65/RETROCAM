@@ -50,6 +50,7 @@ public final class Main {
     private RenderSettings settings;
     private ImGuiLayer     imGui;
     private OrbitCamera    camera;
+    private com.retrocam.camera.FreeCamera freeCamera;
     private ThinLensCamera thinLens;
     private TemporalState  temporal;
 
@@ -73,6 +74,7 @@ public final class Main {
     private float   prevSaStrength;
     private float   prevLcaR, prevLcaG, prevLcaB;
     private boolean prevSppmEnabled;
+    private boolean prevFreeCamActive;
 
     // ── Timing ────────────────────────────────────────────────────────────────
     private long   lastNanoTime  = System.nanoTime();
@@ -168,6 +170,7 @@ public final class Main {
         sppmManager       = new SPPMManager(settings);
         postStack         = new PostProcessStack(fullscreenVao);
         staticImageLoader = new StaticImageLoader();
+        freeCamera = new com.retrocam.camera.FreeCamera();
         displayShader     = ShaderProgram.createRender(
             "/shaders/fullscreen.vert", "/shaders/display.frag");
     }
@@ -178,11 +181,13 @@ public final class Main {
 
         renderContext = new com.retrocam.export.RenderContext(
             renderer, sppmManager, postStack, sceneUploader, sceneEditor,
-            camera, thinLens, temporal, settings, displayShader, fullscreenVao);
+            camera, freeCamera, thinLens, temporal, settings,
+            displayShader, fullscreenVao);
 
         renderPipeline = new com.retrocam.export.RenderPipeline();
         imGui.setRenderPipeline(renderPipeline);
         imGui.setCamera(camera);
+        imGui.setFreeCamera(freeCamera);
     }
 
     // ── Loop ──────────────────────────────────────────────────────────────────
@@ -223,10 +228,21 @@ public final class Main {
             temporal.setFocalDistTarget(settings.focusDistM);
             temporal.update(dt, settings);
 
+            // Free camera playback — tick before accumulation-reset detection
+            if (settings.freeCamActive && freeCamera.hasAnimation()) {
+                float animTime = settings.freeCamStartTime
+                    + temporal.time * settings.freeCamPlaybackSpeed;
+                freeCamera.positionScale          = settings.freeCamPositionScale;
+                freeCamera.applyZoomToFocalLength = settings.freeCamApplyZoom;
+                freeCamera.evaluateAtTime(animTime, settings);
+            }
+            renderContext.activeCamera = (settings.freeCamActive && freeCamera.hasAnimation())
+                ? freeCamera : camera;
+
             glfwSwapInterval(settings.vSync ? 1 : 0);
 
             // Reset accumulation if camera moved or any optical setting changed
-            if (camera.isDirty() || settingsChanged()) {
+            if (camera.isDirty() || (freeCamera.isDirty() && settings.freeCamActive) || settingsChanged()) {
                 renderer.reset();
                 sppmManager.reset(settings);
                 camera.clearDirty();
@@ -258,7 +274,7 @@ public final class Main {
                     sppmManager.tracePhotons(sceneUploader, settings);
                 }
                 if (!imGui.isTestModeActive()) {
-                    renderer.render(sceneUploader, camera, thinLens, temporal, settings);
+                    renderer.render(sceneUploader, renderContext.activeCamera, thinLens, temporal, settings);
                 }
                 if (!imGui.isTestModeActive()
                         && settings.sppmEnabled
@@ -343,6 +359,7 @@ public final class Main {
         prevLcaR        = settings.lcaDelta[0];
         prevLcaG        = settings.lcaDelta[1];
         prevLcaB        = settings.lcaDelta[2];
+        prevFreeCamActive = settings.freeCamActive;
         prevSppmEnabled = settings.sppmEnabled;
     }
 
@@ -360,6 +377,7 @@ public final class Main {
             || settings.lcaDelta[0]    != prevLcaR
             || settings.lcaDelta[1]    != prevLcaG
             || settings.lcaDelta[2]    != prevLcaB
+            || settings.freeCamActive  != prevFreeCamActive
             || settings.sppmEnabled    != prevSppmEnabled;
     }
 
