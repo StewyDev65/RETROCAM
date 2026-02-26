@@ -257,8 +257,9 @@ public final class Main {
                 // Tick does one complete frame (all spp + post) and returns its output.
                 finalTexId = renderPipeline.tick(renderContext, dt);
                 if (finalTexId < 0) finalTexId = postStack.runOnAccum(
-                    renderer.getAccumTexture(), renderer.getGBufferTexture(),
-                    renderer.getTotalSamples(), settings.exposure, settings, temporal);
+                        renderer.getAccumTexture(), renderer.getGBufferTexture(),
+                        renderer.getGAlbedoTexture(), renderer.getVarianceTexture(),
+                        renderer.getTotalSamples(), settings.exposure, settings, temporal);
 
                 // Update window title with pipeline progress
                 glfwSetWindowTitle(window, String.format("%s  |  Rendering frame %d/%d  |  %.0f%%",
@@ -303,6 +304,7 @@ public final class Main {
                 } else {
                     finalTexId = postStack.runOnAccum(
                         renderer.getAccumTexture(), renderer.getGBufferTexture(),
+                        renderer.getGAlbedoTexture(), renderer.getVarianceTexture(),
                         renderer.getTotalSamples(), settings.exposure, settings, temporal);
                 }
             }

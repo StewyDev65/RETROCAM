@@ -8,6 +8,7 @@ import com.retrocam.scene.SceneUploader;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
 import static org.lwjgl.opengl.GL11.GL_NEAREST;
+import static org.lwjgl.opengl.GL11.GL_RED;
 import static org.lwjgl.opengl.GL11.GL_RGBA;
 import static org.lwjgl.opengl.GL11.GL_TEXTURE_2D;
 import static org.lwjgl.opengl.GL11.GL_TEXTURE_MAG_FILTER;
@@ -26,6 +27,7 @@ import static org.lwjgl.opengl.GL42.GL_TEXTURE_FETCH_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glBindImageTexture;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL43.*;
+import static org.lwjgl.opengl.GL30.GL_R32F;
 import static org.lwjgl.opengl.GL30.GL_RGBA16F;
 import static org.lwjgl.opengl.GL15.GL_WRITE_ONLY;
 
@@ -41,6 +43,8 @@ public final class Renderer {
     private final ShaderProgram pathTraceShader;
     private int   accumTexture;
     private int   gBufferTexture;
+    private int   gAlbedoTexture;
+    private int   varianceTexture;
     private int   totalSamples = 0;
 
     private static final int RENDER_W = RenderSettings.RENDER_WIDTH;
@@ -52,6 +56,8 @@ public final class Renderer {
         pathTraceShader = ShaderProgram.createCompute("/shaders/pathtrace.comp");
         accumTexture    = createAccumTexture();
         gBufferTexture  = createGBufferTexture();
+        gAlbedoTexture  = createGAlbedoTexture();
+        varianceTexture = createVarianceTexture();
         System.out.println("[Renderer] Ready.");
     }
 
@@ -74,6 +80,8 @@ public final class Renderer {
         // Bind accumulation image (READ_WRITE)
         glBindImageTexture(0, accumTexture, 0, false, 0, GL_READ_WRITE, GL_RGBA32F);
         glBindImageTexture(1, gBufferTexture, 0, false, 0, GL_WRITE_ONLY,  GL_RGBA16F);
+        glBindImageTexture(2, gAlbedoTexture,  0, false, 0, GL_WRITE_ONLY,  GL_RGBA16F);
+        glBindImageTexture(3, varianceTexture, 0, false, 0, GL_READ_WRITE,  GL_R32F);
 
         // Camera + optical uniforms (Phase 4: includes SA, LCA, IIR focal dist)
         tlc.uploadTo(pathTraceShader, orbit, settings, temporal);
@@ -110,17 +118,23 @@ public final class Renderer {
     // ── Reset ─────────────────────────────────────────────────────────────────
 
     public void reset() {
-        if (accumTexture != 0) glDeleteTextures(accumTexture);
+        if (accumTexture   != 0) glDeleteTextures(accumTexture);
         if (gBufferTexture != 0) glDeleteTextures(gBufferTexture);
-        gBufferTexture = createGBufferTexture();
-        accumTexture  = createAccumTexture();
-        totalSamples  = 0;
+        if (gAlbedoTexture != 0) glDeleteTextures(gAlbedoTexture);
+        if (varianceTexture!= 0) glDeleteTextures(varianceTexture);
+        accumTexture    = createAccumTexture();
+        gBufferTexture  = createGBufferTexture();
+        gAlbedoTexture  = createGAlbedoTexture();
+        varianceTexture = createVarianceTexture();
+        totalSamples    = 0;
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     public int  getAccumTexture()    { return accumTexture;  }
     public int  getGBufferTexture()  { return gBufferTexture; }
+    public int  getGAlbedoTexture()   { return gAlbedoTexture;  }
+    public int  getVarianceTexture()  { return varianceTexture; }
     public int  getTotalSamples()    { return totalSamples;  }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
@@ -129,6 +143,8 @@ public final class Renderer {
         pathTraceShader.destroy();
         if (accumTexture != 0) glDeleteTextures(accumTexture);
         if (gBufferTexture != 0) glDeleteTextures(gBufferTexture);
+        if (gAlbedoTexture  != 0) glDeleteTextures(gAlbedoTexture);
+        if (varianceTexture != 0) glDeleteTextures(varianceTexture);
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -149,6 +165,28 @@ public final class Renderer {
         glBindTexture(GL_TEXTURE_2D, tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, RENDER_W, RENDER_H,
                     0, GL_RGBA, GL_FLOAT, (java.nio.ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return tex;
+    }
+
+    private static int createGAlbedoTexture() {
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, RENDER_W, RENDER_H,
+                     0, GL_RGBA, GL_FLOAT, (java.nio.ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return tex;
+    }
+
+    private static int createVarianceTexture() {
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, RENDER_W, RENDER_H,
+                     0, GL_RED, GL_FLOAT, (java.nio.ByteBuffer) null);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindTexture(GL_TEXTURE_2D, 0);

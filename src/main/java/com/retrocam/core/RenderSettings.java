@@ -28,7 +28,7 @@ public final class RenderSettings implements Keyframeable {
     public float focusDistM      = 2.0f;    // metres
     public int   aperatureBlades = 5;       // pentagon bokeh
     public float saStrength      = 0.04f;   // spherical aberration
-    public float[] lcaDelta      = { -0.002f, 0.000f, 0.003f }; // R G B
+    public float[] lcaDelta      = { 0.000f, 0.000f, 0.000f }; // R G B
     public float afSpeed         = 3.0f;    // auto-focus IIR speed (1/s)
 
     // ── SPPM (Phase 5) ────────────────────────────────────────────────────────
@@ -87,10 +87,10 @@ public final class RenderSettings implements Keyframeable {
     // atrousSigmaDepth: relative depth std-dev (lower = sharper depth edges).
     // atrousMaxSpp:     auto-bypass above this sample count (0 = always active).
     public boolean atrousEnabled     = false;
-    public int     atrousIterations  = 1;
-    public float   atrousSigmaColor  = 0.08f;
-    public float   atrousSigmaNormal = 32.0f;
-    public float   atrousSigmaDepth  = 0.5f;
+    public int     atrousIterations  = 4;
+    public float   atrousSigmaColor  = 1.0f;
+    public float   atrousSigmaNormal = 64.0f;
+    public float   atrousSigmaDepth  = 0.15f;
     public int     atrousMaxSpp      = 0;       // 0 = always active
 
     // ── Phase 6: frame counter (incremented by Main each render frame) ─────────

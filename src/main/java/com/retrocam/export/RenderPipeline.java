@@ -228,6 +228,8 @@ public final class RenderPipeline {
         int postTexId = ctx.postStack.runOnAccum(
             ctx.renderer.getAccumTexture(),
             ctx.renderer.getGBufferTexture(),
+            ctx.renderer.getGAlbedoTexture(),
+            ctx.renderer.getVarianceTexture(),
             ctx.renderer.getTotalSamples(),
             ctx.settings.exposure,
             ctx.settings,

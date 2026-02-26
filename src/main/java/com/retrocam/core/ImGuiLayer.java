@@ -450,7 +450,7 @@ public final class ImGuiLayer {
         ImGui.textDisabled("(filter radius 2^N px)");
 
         floatBuf[0] = s.atrousSigmaColor;
-        if (ImGui.sliderFloat("Sigma Colour##atrous", floatBuf, 0.01f, 0.5f))
+        if (ImGui.sliderFloat("Sigma Colour (var)##atrous", floatBuf, 0.1f, 5.0f))
             s.atrousSigmaColor = floatBuf[0];
 
         floatBuf[0] = s.atrousSigmaNormal;
@@ -458,7 +458,7 @@ public final class ImGuiLayer {
             s.atrousSigmaNormal = floatBuf[0];
 
         floatBuf[0] = s.atrousSigmaDepth;
-        if (ImGui.sliderFloat("Sigma Depth##atrous", floatBuf, 0.05f, 2.0f))
+        if (ImGui.sliderFloat("Sigma Depth##atrous", floatBuf, 0.02f, 1.0f))
             s.atrousSigmaDepth = floatBuf[0];
 
         intBuf[0] = s.atrousMaxSpp;

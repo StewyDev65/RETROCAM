@@ -57,7 +57,9 @@ public final class AtrousDenoiser {
      * @param s            current render settings
      * @return GL texture ID of the denoised result
      */
-    public int denoise(int colorTexId, int gBufferTexId, RenderSettings s) {
+    public int denoise(int colorTexId, int gBufferTexId, int gAlbedoTexId,
+                       int varianceTexId, int totalSamples, float exposure,
+                       RenderSettings s) {
         int   numPasses = Math.max(1, Math.min(s.atrousIterations, 5));
         int   readTex   = colorTexId;
         Framebuffer write = bufA;
@@ -73,6 +75,18 @@ public final class AtrousDenoiser {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, gBufferTexId);
         shader.setInt("u_gBuffer", 1);
+
+        // Bind albedo G-buffer (unit 2) and variance texture (unit 3) — static across passes
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, gAlbedoTexId);
+        shader.setInt("u_gAlbedo", 2);
+
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, varianceTexId);
+        shader.setInt("u_varianceTex", 3);
+
+        shader.setInt  ("u_sampleCount", Math.max(totalSamples, 1));
+        shader.setFloat("u_exposure",    exposure);
 
         for (int i = 0; i < numPasses; i++) {
             shader.setInt("u_stepWidth", 1 << i);   // 1, 2, 4, 8, 16
@@ -100,6 +114,10 @@ public final class AtrousDenoiser {
 
         // Clean up texture unit 1
         glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
 

@@ -106,13 +106,15 @@ public final class PostProcessStack {
      * @param ts           current temporal state (AGC gain, etc.)
      * @return GL texture ID of the final LDR output (valid until next call)
      */
-    public int runOnAccum(int accumTexId, int gBufferTexId, int totalSamples, float exposure,
-                      RenderSettings s, TemporalState ts) {
+    public int runOnAccum(int accumTexId, int gBufferTexId, int gAlbedoTexId,
+                          int varianceTexId, int totalSamples, float exposure,
+                          RenderSettings s, TemporalState ts) {
         blit(p00Normalize, accumTexId, normalizeBuffer, sh -> {
             sh.setInt("u_totalSamples", Math.max(totalSamples, 1));
             sh.setFloat("u_exposure", exposure);
         });
-        return runChain(normalizeBuffer.textureId(), gBufferTexId, totalSamples, s, ts);
+        return runChain(normalizeBuffer.textureId(), gBufferTexId, gAlbedoTexId,
+                        varianceTexId, totalSamples, exposure, s, ts);
     }
 
     /**
@@ -130,18 +132,18 @@ public final class PostProcessStack {
             sh.setInt("u_totalSamples", 1);
             sh.setFloat("u_exposure", 1.0f);
         });
-        return runChain(normalizeBuffer.textureId(), 0, 1, s, ts);
+        return runChain(normalizeBuffer.textureId(), 0, 0, 0, 1, 1.0f, s, ts);
     }
 
     // ── Internal chain ─────────────────────────────────────────────────────────
 
-    private int runChain(int current, int gBufferTexId, int totalSamples, RenderSettings s, TemporalState ts) {
-
-        // À-trous denoiser: runs before VHS chain so effects layer on clean image.
-        // Auto-bypasses above atrousMaxSpp threshold (0 = always active).
+    private int runChain(int current, int gBufferTexId, int gAlbedoTexId,
+                         int varianceTexId, int totalSamples, float exposure,
+                         RenderSettings s, TemporalState ts) {
         boolean sppExceeded = s.atrousMaxSpp > 0 && totalSamples > s.atrousMaxSpp;
         if (s.atrousEnabled && gBufferTexId != 0 && !sppExceeded) {
-            current = atrous.denoise(current, gBufferTexId, s);
+            current = atrous.denoise(current, gBufferTexId, gAlbedoTexId,
+                                     varianceTexId, totalSamples, exposure, s);
         }
 
         // p01 – VHS luma horizontal bandwidth limit
