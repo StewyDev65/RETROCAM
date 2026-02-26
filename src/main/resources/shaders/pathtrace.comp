@@ -174,8 +174,28 @@ HitRecord traverseBVH(vec3 ro, vec3 rd) {
             }
         } else {
             if (top < 62) {
-                stack[top++] = node.rightChild;
-                stack[top++] = node.leftChild;
+                // Order children by AABB hit distance — nearer child lands on
+                // top of the stack so it is processed first, allowing rec.t to
+                // tighten sooner and the aabbT > rec.t check to cull the farther
+                // subtree earlier.  (Aila & Laine 2009)
+                float tLeft, tRight;
+                bool hitLeft  = intersectAABB(ro, invRd, nodes[node.leftChild].aabbMin,
+                                              nodes[node.leftChild].aabbMax, tLeft);
+                bool hitRight = intersectAABB(ro, invRd, nodes[node.rightChild].aabbMin,
+                                              nodes[node.rightChild].aabbMax, tRight);
+
+                if (hitLeft && hitRight) {
+                    // Push farther child first so nearer is popped next
+                    if (tLeft < tRight) {
+                        stack[top++] = node.rightChild;
+                        stack[top++] = node.leftChild;
+                    } else {
+                        stack[top++] = node.leftChild;
+                        stack[top++] = node.rightChild;
+                    }
+                } else if (hitLeft)  { stack[top++] = node.leftChild;  }
+                  else if (hitRight) { stack[top++] = node.rightChild; }
+                // Both miss: already culled by parent AABB test, push nothing
             }
         }
     }
