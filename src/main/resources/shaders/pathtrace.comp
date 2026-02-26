@@ -421,8 +421,8 @@ vec3 traceRadiance(Ray ray, inout uint seed, out vec3 o_firstHitAlbedo) {
             radiance += throughput * mat.emission * mat.emissionStrength;
         }
 
-        // Russian roulette termination after bounce 3
-        if (bounce >= 3) {
+        // Russian roulette termination after bounce 2
+        if (bounce >= 2) {
             float survive = max(mat.albedo.r, max(mat.albedo.g, mat.albedo.b));
             if (mat.metallic > 0.5 || mat.transmission > 0.5) survive = 0.95;
             survive = clamp(survive, 0.01, 0.95);
