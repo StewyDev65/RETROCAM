@@ -433,39 +433,85 @@ public final class ImGuiLayer {
         }
     }
 
-    // ── À-trous Denoiser ───────────────────────────────────────────────────────
+    // ── Denoising ─────────────────────────────────────────────────────────────
 
     private void renderDenoisingSection(RenderSettings s) {
-        if (!ImGui.collapsingHeader("Spatial Denoiser (À-Trous)")) return;
+        if (!ImGui.collapsingHeader("Denoising")) return;
+
+        // ── À-Trous (spatial wavelet) ──────────────────────
+        ImGui.separator();
+        ImGui.text("À-Trous (Spatial Wavelet)");
 
         boolBuf.set(s.atrousEnabled);
-        if (ImGui.checkbox("Enable À-Trous Denoiser", boolBuf)) s.atrousEnabled = boolBuf.get();
+        if (ImGui.checkbox("Enable À-Trous", boolBuf)) s.atrousEnabled = boolBuf.get();
 
-        if (!s.atrousEnabled) return;
+        if (s.atrousEnabled) {
+            intBuf[0] = s.atrousIterations;
+            if (ImGui.sliderInt("Iterations##atrous", intBuf, 1, 5))
+                s.atrousIterations = intBuf[0];
+            ImGui.sameLine();
+            ImGui.textDisabled("(filter radius 2^N px)");
 
-        intBuf[0] = s.atrousIterations;
-        if (ImGui.sliderInt("Iterations##atrous", intBuf, 1, 5))
-            s.atrousIterations = intBuf[0];
-        ImGui.sameLine();
-        ImGui.textDisabled("(filter radius 2^N px)");
+            floatBuf[0] = s.atrousSigmaColor;
+            if (ImGui.sliderFloat("Sigma Colour (var)##atrous", floatBuf, 0.1f, 5.0f))
+                s.atrousSigmaColor = floatBuf[0];
 
-        floatBuf[0] = s.atrousSigmaColor;
-        if (ImGui.sliderFloat("Sigma Colour (var)##atrous", floatBuf, 0.1f, 5.0f))
-            s.atrousSigmaColor = floatBuf[0];
+            floatBuf[0] = s.atrousSigmaNormal;
+            if (ImGui.sliderFloat("Sigma Normal##atrous", floatBuf, 1.0f, 128.0f))
+                s.atrousSigmaNormal = floatBuf[0];
 
-        floatBuf[0] = s.atrousSigmaNormal;
-        if (ImGui.sliderFloat("Sigma Normal##atrous", floatBuf, 1.0f, 128.0f))
-            s.atrousSigmaNormal = floatBuf[0];
+            floatBuf[0] = s.atrousSigmaDepth;
+            if (ImGui.sliderFloat("Sigma Depth##atrous", floatBuf, 0.02f, 1.0f))
+                s.atrousSigmaDepth = floatBuf[0];
 
-        floatBuf[0] = s.atrousSigmaDepth;
-        if (ImGui.sliderFloat("Sigma Depth##atrous", floatBuf, 0.02f, 1.0f))
-            s.atrousSigmaDepth = floatBuf[0];
+            intBuf[0] = s.atrousMaxSpp;
+            if (ImGui.sliderInt("Auto-Off SPP##atrous", intBuf, 0, 256))
+                s.atrousMaxSpp = intBuf[0];
+            ImGui.sameLine();
+            ImGui.textDisabled("(0 = always on)");
+        }
 
-        intBuf[0] = s.atrousMaxSpp;
-        if (ImGui.sliderInt("Auto-Off SPP##atrous", intBuf, 0, 256))
-            s.atrousMaxSpp = intBuf[0];
-        ImGui.sameLine();
-        ImGui.textDisabled("(0 = always on)");
+        ImGui.spacing();
+
+        // ── OIDN (AI denoiser) ─────────────────────────────
+        ImGui.separator();
+        ImGui.text("Intel OIDN (AI Denoiser)");
+
+        boolBuf.set(s.oidnEnabled);
+        if (ImGui.checkbox("Enable OIDN##oidn", boolBuf)) s.oidnEnabled = boolBuf.get();
+
+        if (s.oidnEnabled) {
+            String[] qualities = {"Fast", "Balanced", "High"};
+            if (ImGui.beginCombo("Quality##oidn", qualities[s.oidnQuality])) {
+                for (int i = 0; i < qualities.length; i++) {
+                    boolean selected = (s.oidnQuality == i);
+                    if (ImGui.selectable(qualities[i], selected))
+                        s.oidnQuality = i;
+                    if (selected) ImGui.setItemDefaultFocus();
+                }
+                ImGui.endCombo();
+            }
+
+            boolBuf.set(s.oidnUseAlbedo);
+            if (ImGui.checkbox("Use Albedo Guide##oidn", boolBuf)) s.oidnUseAlbedo = boolBuf.get();
+
+            boolBuf.set(s.oidnUseNormals);
+            if (ImGui.checkbox("Use Normal Guide##oidn", boolBuf)) s.oidnUseNormals = boolBuf.get();
+
+            intBuf[0] = s.oidnMinSpp;
+            if (ImGui.sliderInt("Min SPP##oidn", intBuf, 0, 64))
+                s.oidnMinSpp = intBuf[0];
+            ImGui.sameLine();
+            ImGui.textDisabled("(skip below this)");
+
+            intBuf[0] = s.oidnMaxSpp;
+            if (ImGui.sliderInt("Auto-Off SPP##oidn", intBuf, 0, 512))
+                s.oidnMaxSpp = intBuf[0];
+            ImGui.sameLine();
+            ImGui.textDisabled("(0 = always on)");
+
+            ImGui.textDisabled("Runs as external subprocess via memory-mapped IPC");
+        }
     }
 
     // ── AGC & Temporal ─────────────────────────────────────────────────────────

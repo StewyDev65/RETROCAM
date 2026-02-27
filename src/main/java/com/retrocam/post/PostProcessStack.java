@@ -62,6 +62,7 @@ public final class PostProcessStack {
     private final PostProcessPass p16Interlace;
 
     private final AtrousDenoiser atrous;
+    private final OIDNDenoiser oidn;
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -91,6 +92,9 @@ public final class PostProcessStack {
         p16Interlace   = new PostProcessPass("p16_interlace",    "/shaders/post/p16_interlace.frag");
 
         atrous = new AtrousDenoiser(fullscreenVao);
+
+        oidn = new OIDNDenoiser("oidn-cli/build/oidn_denoise.exe");
+        oidn.initialize(W, H);
     }
 
     // ── Public entry points ────────────────────────────────────────────────────
@@ -144,6 +148,13 @@ public final class PostProcessStack {
         if (s.atrousEnabled && gBufferTexId != 0 && !sppExceeded) {
             current = atrous.denoise(current, gBufferTexId, gAlbedoTexId,
                                      varianceTexId, totalSamples, exposure, s);
+        }
+
+        // OIDN AI denoiser (external subprocess via memory-mapped IPC)
+        boolean oidnSppOk = (s.oidnMinSpp == 0 || totalSamples >= s.oidnMinSpp)
+                        && (s.oidnMaxSpp == 0 || totalSamples <= s.oidnMaxSpp);
+        if (s.oidnEnabled && oidnSppOk) {
+            current = oidn.denoise(current, gBufferTexId, gAlbedoTexId, s);
         }
 
         // p01 – VHS luma horizontal bandwidth limit
@@ -341,6 +352,7 @@ public final class PostProcessStack {
         p15EdgeEnhance.destroy();
         p16Interlace.destroy();
         atrous.destroy();
+        oidn.dispose();
     }
 
     // ── Functional interface ───────────────────────────────────────────────────

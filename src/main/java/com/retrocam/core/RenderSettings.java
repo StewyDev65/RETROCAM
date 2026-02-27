@@ -93,6 +93,16 @@ public final class RenderSettings implements Keyframeable {
     public float   atrousSigmaDepth  = 0.15f;
     public int     atrousMaxSpp      = 0;       // 0 = always active
 
+    // ── OIDN Denoiser (external subprocess) ────────────────────────────────────
+    // Uses Intel Open Image Denoise via a CLI subprocess with memory-mapped IPC.
+    // Runs after accumulation + normalization, before the VHS post-process chain.
+    public boolean oidnEnabled       = false;
+    public int     oidnQuality       = 2;       // 0=Fast, 1=Balanced, 2=High
+    public boolean oidnUseAlbedo     = true;
+    public boolean oidnUseNormals    = true;
+    public int     oidnMinSpp        = 4;       // don't denoise below this sample count
+    public int     oidnMaxSpp        = 0;       // auto-bypass above this (0 = always active)
+
     // ── Phase 6: frame counter (incremented by Main each render frame) ─────────
     // Used by noise/jitter shaders to produce frame-varying randomness.
     public int frameIndex = 0;
