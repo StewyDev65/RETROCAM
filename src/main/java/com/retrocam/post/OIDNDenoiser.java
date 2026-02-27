@@ -53,6 +53,10 @@ public final class OIDNDenoiser {
     private String  lastError   = "";
     private long    lastDenoiseMs = 0;
 
+    // Caching — avoid running every sample
+    private int lastDenoisedAtSpp = -1;
+    private int cachedTexture     = 0;      // 0 = no cached result
+
     // ── Construction ───────────────────────────────────────────────────────
 
     public OIDNDenoiser(String executablePath) {
@@ -100,6 +104,62 @@ public final class OIDNDenoiser {
             System.err.println("[OIDNDenoiser] " + lastError);
             dispose();
         }
+    }
+
+    /**
+     * Returns the cached denoised texture if OIDN shouldn't run this frame,
+     * or runs a fresh denoise if the interval/trigger conditions are met.
+     *
+     * @param totalSamples current accumulated sample count
+     * @return texture ID to use, or 0 if OIDN should be skipped entirely this frame
+     */
+    public int denoiseIfNeeded(int colorTexId, int gBufferTexId, int gAlbedoTexId,
+                            RenderSettings settings, int totalSamples) {
+        if (!initialized || !settings.oidnEnabled) {
+            cachedTexture = 0;
+            lastDenoisedAtSpp = -1;
+            return colorTexId;
+        }
+
+        // SPP range check
+        boolean sppOk = (settings.oidnMinSpp == 0 || totalSamples >= settings.oidnMinSpp)
+                    && (settings.oidnMaxSpp == 0 || totalSamples <= settings.oidnMaxSpp);
+        if (!sppOk) return colorTexId;
+
+        // Decide whether to run this frame
+        boolean shouldRun = false;
+
+        if (settings.oidnDenoiseNow) {
+            shouldRun = true;
+            settings.oidnDenoiseNow = false;  // consume the one-shot trigger
+        } else if (settings.oidnInterval > 0
+                && totalSamples > 0
+                && totalSamples != lastDenoisedAtSpp
+                && totalSamples % settings.oidnInterval == 0) {
+            shouldRun = true;
+        }
+
+        if (shouldRun) {
+            int result = denoise(colorTexId, gBufferTexId, gAlbedoTexId, settings);
+            if (result != colorTexId) {
+                cachedTexture = result;
+                lastDenoisedAtSpp = totalSamples;
+            }
+            return result;
+        }
+
+        // Use cached result if we have one
+        if (cachedTexture != 0) return cachedTexture;
+
+        return colorTexId;
+    }
+
+    /**
+     * Invalidates the cache (call on accumulation reset).
+     */
+    public void invalidateCache() {
+        cachedTexture = 0;
+        lastDenoisedAtSpp = -1;
     }
 
     /**

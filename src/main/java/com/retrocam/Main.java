@@ -245,6 +245,7 @@ public final class Main {
             if (camera.isDirty() || (freeCamera.isDirty() && settings.freeCamActive) || settingsChanged()) {
                 renderer.reset();
                 sppmManager.reset(settings);
+                postStack.getOidn().invalidateCache();
                 camera.clearDirty();
                 snapshotSettings();
             }

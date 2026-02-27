@@ -498,19 +498,25 @@ public final class ImGuiLayer {
             boolBuf.set(s.oidnUseNormals);
             if (ImGui.checkbox("Use Normal Guide##oidn", boolBuf)) s.oidnUseNormals = boolBuf.get();
 
+            intBuf[0] = s.oidnInterval;
+            if (ImGui.sliderInt("Run Every N SPP##oidn", intBuf, 0, 64))
+                s.oidnInterval = intBuf[0];
+            ImGui.sameLine();
+            ImGui.textDisabled(s.oidnInterval == 0 ? "(manual only)" : "");
+
+            if (ImGui.button("Denoise Now##oidn")) {
+                s.oidnDenoiseNow = true;
+            }
+
             intBuf[0] = s.oidnMinSpp;
             if (ImGui.sliderInt("Min SPP##oidn", intBuf, 0, 64))
                 s.oidnMinSpp = intBuf[0];
-            ImGui.sameLine();
-            ImGui.textDisabled("(skip below this)");
 
             intBuf[0] = s.oidnMaxSpp;
             if (ImGui.sliderInt("Auto-Off SPP##oidn", intBuf, 0, 512))
                 s.oidnMaxSpp = intBuf[0];
             ImGui.sameLine();
             ImGui.textDisabled("(0 = always on)");
-
-            ImGui.textDisabled("Runs as external subprocess via memory-mapped IPC");
         }
     }
 

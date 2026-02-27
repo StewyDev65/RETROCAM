@@ -151,10 +151,8 @@ public final class PostProcessStack {
         }
 
         // OIDN AI denoiser (external subprocess via memory-mapped IPC)
-        boolean oidnSppOk = (s.oidnMinSpp == 0 || totalSamples >= s.oidnMinSpp)
-                        && (s.oidnMaxSpp == 0 || totalSamples <= s.oidnMaxSpp);
-        if (s.oidnEnabled && oidnSppOk) {
-            current = oidn.denoise(current, gBufferTexId, gAlbedoTexId, s);
+        if (s.oidnEnabled) {
+            current = oidn.denoiseIfNeeded(current, gBufferTexId, gAlbedoTexId, s, totalSamples);
         }
 
         // p01 – VHS luma horizontal bandwidth limit
@@ -304,6 +302,8 @@ public final class PostProcessStack {
         pingPong.swap();
         return result;
     }
+
+    public OIDNDenoiser getOidn() { return oidn; }
 
     /**
      * Render {@code pass} from {@code inputTex} into {@code target}.

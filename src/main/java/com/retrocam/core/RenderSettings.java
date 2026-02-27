@@ -14,12 +14,12 @@ public final class RenderSettings implements Keyframeable {
 
     // ── Window / display ──────────────────────────────────────────────────────
     public boolean vSync          = true;
-    public int     displayWidth   = 1280;
-    public int     displayHeight  = 720;
+    public int     displayWidth   = 1920;
+    public int     displayHeight  = 1080;
 
     // ── Render resolution (fixed VHS SD) ──────────────────────────────────────
-    public static final int RENDER_WIDTH  = 854;
-    public static final int RENDER_HEIGHT = 480;
+    public static final int RENDER_WIDTH  = 1920;
+    public static final int RENDER_HEIGHT = 1080;
     public static final float FRAME_RATE  = 29.97f;
 
     // ── Thin-lens camera (Phase 3/4) ──────────────────────────────────────────
@@ -102,6 +102,8 @@ public final class RenderSettings implements Keyframeable {
     public boolean oidnUseNormals    = true;
     public int     oidnMinSpp        = 4;       // don't denoise below this sample count
     public int     oidnMaxSpp        = 0;       // auto-bypass above this (0 = always active)
+    public int     oidnInterval      = 1024;      // run every N samples (0 = manual only)
+    public boolean oidnDenoiseNow    = false;   // one-shot trigger from UI button
 
     // ── Phase 6: frame counter (incremented by Main each render frame) ─────────
     // Used by noise/jitter shaders to produce frame-varying randomness.
