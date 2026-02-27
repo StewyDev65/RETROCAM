@@ -111,14 +111,14 @@ public final class PostProcessStack {
      * @return GL texture ID of the final LDR output (valid until next call)
      */
     public int runOnAccum(int accumTexId, int gBufferTexId, int gAlbedoTexId,
-                          int varianceTexId, int totalSamples, float exposure,
-                          RenderSettings s, TemporalState ts) {
+                      int varianceTexId, int totalSamples, float exposure,
+                      RenderSettings s, TemporalState ts, boolean isExport) {
         blit(p00Normalize, accumTexId, normalizeBuffer, sh -> {
             sh.setInt("u_totalSamples", Math.max(totalSamples, 1));
             sh.setFloat("u_exposure", exposure);
         });
         return runChain(normalizeBuffer.textureId(), gBufferTexId, gAlbedoTexId,
-                        varianceTexId, totalSamples, exposure, s, ts);
+                varianceTexId, totalSamples, exposure, s, ts, isExport);
     }
 
     /**
@@ -136,14 +136,14 @@ public final class PostProcessStack {
             sh.setInt("u_totalSamples", 1);
             sh.setFloat("u_exposure", 1.0f);
         });
-        return runChain(normalizeBuffer.textureId(), 0, 0, 0, 1, 1.0f, s, ts);
+        return runChain(normalizeBuffer.textureId(), 0, 0, 0, 1, 1.0f, s, ts, false);
     }
 
     // ── Internal chain ─────────────────────────────────────────────────────────
 
     private int runChain(int current, int gBufferTexId, int gAlbedoTexId,
-                         int varianceTexId, int totalSamples, float exposure,
-                         RenderSettings s, TemporalState ts) {
+                     int varianceTexId, int totalSamples, float exposure,
+                     RenderSettings s, TemporalState ts, boolean isExport) {
         boolean sppExceeded = s.atrousMaxSpp > 0 && totalSamples > s.atrousMaxSpp;
         if (s.atrousEnabled && gBufferTexId != 0 && !sppExceeded) {
             current = atrous.denoise(current, gBufferTexId, gAlbedoTexId,
@@ -152,7 +152,12 @@ public final class PostProcessStack {
 
         // OIDN AI denoiser (external subprocess via memory-mapped IPC)
         if (s.oidnEnabled) {
-            current = oidn.denoiseIfNeeded(current, gBufferTexId, gAlbedoTexId, s, totalSamples);
+            if (isExport && s.oidnForceOnExport) {
+                // Export path: always run a single unconditional denoise pass at final SPP
+                current = oidn.denoise(current, gBufferTexId, gAlbedoTexId, s);
+            } else {
+                current = oidn.denoiseIfNeeded(current, gBufferTexId, gAlbedoTexId, s, totalSamples);
+            }
         }
 
         // p01 – VHS luma horizontal bandwidth limit

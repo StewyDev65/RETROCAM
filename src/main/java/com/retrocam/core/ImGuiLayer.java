@@ -508,6 +508,14 @@ public final class ImGuiLayer {
                 s.oidnDenoiseNow = true;
             }
 
+            ImGui.separator();
+            boolBuf.set(s.oidnForceOnExport);
+            if (ImGui.checkbox("Force Denoise on Export##oidn", boolBuf)) s.oidnForceOnExport = boolBuf.get();
+            ImGui.sameLine();
+            ImGui.textDisabled("(?)");
+            if (ImGui.isItemHovered())
+                ImGui.setTooltip("When exporting photos/video, always run a full OIDN\npass after accumulation, ignoring interval settings.");
+
             intBuf[0] = s.oidnMinSpp;
             if (ImGui.sliderInt("Min SPP##oidn", intBuf, 0, 64))
                 s.oidnMinSpp = intBuf[0];

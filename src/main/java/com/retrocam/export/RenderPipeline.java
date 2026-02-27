@@ -233,7 +233,8 @@ public final class RenderPipeline {
             ctx.renderer.getTotalSamples(),
             ctx.settings.exposure,
             ctx.settings,
-            temporal);
+            temporal,
+            true);
 
         lastOutputTexId = applyDisplayPass(postTexId, ctx);
     }

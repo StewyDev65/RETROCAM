@@ -260,7 +260,7 @@ public final class Main {
                 if (finalTexId < 0) finalTexId = postStack.runOnAccum(
                         renderer.getAccumTexture(), renderer.getGBufferTexture(),
                         renderer.getGAlbedoTexture(), renderer.getVarianceTexture(),
-                        renderer.getTotalSamples(), settings.exposure, settings, temporal);
+                        renderer.getTotalSamples(), settings.exposure, settings, temporal, false);
 
                 // Update window title with pipeline progress
                 glfwSetWindowTitle(window, String.format("%s  |  Rendering frame %d/%d  |  %.0f%%",
@@ -306,7 +306,7 @@ public final class Main {
                     finalTexId = postStack.runOnAccum(
                         renderer.getAccumTexture(), renderer.getGBufferTexture(),
                         renderer.getGAlbedoTexture(), renderer.getVarianceTexture(),
-                        renderer.getTotalSamples(), settings.exposure, settings, temporal);
+                        renderer.getTotalSamples(), settings.exposure, settings, temporal, false);
                 }
             }
 
