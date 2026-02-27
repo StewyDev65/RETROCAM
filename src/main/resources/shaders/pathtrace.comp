@@ -18,6 +18,7 @@ uniform float u_fovTanHalf;
 uniform int   u_apertureBlades;
 uniform ivec2 u_resolution;
 uniform int   u_frameIndex;      // 0 = first sample, clears accumulation
+uniform sampler2D u_blueNoise;  // 64×64 RGBA8 blue-noise, GL_NEAREST + GL_REPEAT
 
 // ── Phase 4 optical uniforms ──────────────────────────────────────────────────
 uniform float u_saStrength;      // Spherical aberration strength (default 0.04)
@@ -33,6 +34,7 @@ uniform int   u_lightCount;         // number of emissive triangles in LightBuff
 uniform float u_totalLightPower;    // sum of (luminance * area * PI) over all lights
 uniform int   u_neeEnabled;         // 1 = use Next Event Estimation, 0 = pure path trace
 uniform float u_neeFireflyClamp;    // max NEE contribution multiplier (default 20.0)
+uniform int   u_samplesPerDispatch;   // inner sample loop count (1–16)
 
 // ── GPU Scene Data ────────────────────────────────────────────────────────────
 
@@ -291,6 +293,30 @@ float smithG2GGX(float NdotL, float NdotV, float alpha) {
     return 2.0 * NdotL * NdotV / max(denomA + denomB, 1e-7);
 }
 
+// ── Blue-noise sub-pixel sampler ──────────────────────────────────────────────
+//
+// Returns a blue-noise-distributed vec2 in [0,1)² for the given pixel and
+// sample index.  A Cranley-Patterson toroidal shift (XOR of pixel coordinates
+// with a hash of sampleIdx) decorrelates noise across frames while preserving
+// the blue-noise spectral distribution within each frame.
+//
+// Using blue noise here instead of PCG white noise structures the per-pixel
+// error as fine-grain spatial frequencies rather than low-frequency blobs,
+// which the à-trous and OIDN denoisers handle significantly better at low SPP.
+
+vec2 blueNoise2(ivec2 pixel, int sampleIdx) {
+    // Hash sample index into a 12-bit offset for each axis
+    uint h = uint(sampleIdx) * 2749558u + 1u;
+    h ^= h >> 16u;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16u;
+    ivec2 coord = ivec2(
+        (pixel.x ^ int(h        & 63u)),
+        (pixel.y ^ int((h >> 6u) & 63u))
+    ) & 63;
+    return texelFetch(u_blueNoise, coord, 0).rg;
+}
+
 // ── Sampling helpers ──────────────────────────────────────────────────────────
 
 vec3 sampleCosineHemisphere(vec2 u, vec3 n) {
@@ -398,11 +424,12 @@ vec3 sampleDirectLight(vec3 hitPos, vec3 n, vec3 albedo, inout uint seed) {
 
 struct Ray { vec3 origin; vec3 dir; };
 
-Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset) {
+Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset, vec2 bnJitter) {
     float aspect = float(u_resolution.x) / float(u_resolution.y);
 
-    // Jittered sub-pixel for anti-aliasing
-    vec2 jitter  = rand2(seed) - 0.5;
+    // Blue-noise sub-pixel jitter — spatially structured error converges faster
+    // and produces cleaner output for the denoiser than PCG white noise.
+    vec2 jitter  = bnJitter - 0.5;
     vec2 ndcUV   = (vec2(pixel) + vec2(0.5) + jitter) / vec2(u_resolution);
     vec2 screen  = ndcUV * 2.0 - 1.0;
 
@@ -451,8 +478,9 @@ Ray generateRay(ivec2 pixel, inout uint seed, float focalDistOffset) {
 //   bounce was specular (glass/metal) or this is the camera ray (bounce 0), we
 //   DO add the emitter contribution because NEE cannot sample delta BSDFs.
 
-vec3 traceRadiance(Ray ray, inout uint seed, out vec3 o_firstHitAlbedo) {
-    o_firstHitAlbedo = vec3(1.0); // default: sky miss → no albedo modulation
+vec3 traceRadiance(Ray ray, inout uint seed, out vec3 o_firstHitAlbedo, out vec4 o_gBuffer) {
+    o_firstHitAlbedo = vec3(1.0);
+    o_gBuffer        = vec4(0.0, 1.0, 0.0, 1e4);
     vec3 radiance   = vec3(0.0);
     vec3 throughput = vec3(1.0);
     vec3 ro = ray.origin;
@@ -480,6 +508,7 @@ vec3 traceRadiance(Ray ray, inout uint seed, out vec3 o_firstHitAlbedo) {
         // Transmissive materials use vec3(1.0) to avoid demodulation on refracted paths.
         if (bounce == 0) {
             o_firstHitAlbedo = (mat.transmission > 0.5) ? vec3(1.0) : mat.albedo;
+            o_gBuffer        = vec4(n, hit.t);
         }
 
         // ── Emission ──────────────────────────────────────────────────────────
@@ -584,16 +613,6 @@ vec3 traceRadiance(Ray ray, inout uint seed, out vec3 o_firstHitAlbedo) {
     return radiance;
 }
 
-// ── G-buffer helper ───────────────────────────────────────────────────────────
-// Returns (shading_normal.xyz, hit_t) for the primary ray's first hit.
-// Used to seed the spatial denoiser on frame 0.  Sky/miss returns t = 1e4.
-vec4 sampleGBuffer(Ray ray) {
-    HitRecord hit = traverseBVH(ray.origin, ray.dir);
-    if (!hit.valid) return vec4(0.0, 1.0, 0.0, 1e4);
-    vec3 n = dot(ray.dir, hit.normal) < 0.0 ? hit.normal : -hit.normal;
-    return vec4(n, hit.t);
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 //
 // Longitudinal CA implementation: see original header comment — unchanged.
@@ -602,54 +621,54 @@ void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, u_resolution))) return;
 
-    vec3 radiance;
-    vec3 firstHitAlbedo;
-
     bool lcaActive = (abs(u_lcaDelta.r) + abs(u_lcaDelta.b)) > 1e-4;
+
+    vec2 bnJitter = blueNoise2(pixel, u_frameIndex);
+
+    vec3 radiance;
+    vec3 sAlbedo;
+    vec4 sGBuffer;
 
     if (lcaActive) {
         uint seedR = initSeed(pixel, u_frameIndex * 3 + 0);
         uint seedG = initSeed(pixel, u_frameIndex * 3 + 1);
         uint seedB = initSeed(pixel, u_frameIndex * 3 + 2);
 
-        vec3 albedoR, albedoG, albedoB;
-        Ray rayR = generateRay(pixel, seedR, u_lcaDelta.r);
-        float radR = traceRadiance(rayR, seedR, albedoR).r;
+        vec4 gbR, gbG, gbB;
+        vec3 albR, albG, albB;
 
-        Ray rayG = generateRay(pixel, seedG, u_lcaDelta.g);
-        float radG = traceRadiance(rayG, seedG, albedoG).g;
+        Ray rayR = generateRay(pixel, seedR, u_lcaDelta.r, bnJitter);
+        float radR = traceRadiance(rayR, seedR, albR, gbR).r;
 
-        Ray rayB = generateRay(pixel, seedB, u_lcaDelta.b);
-        float radB = traceRadiance(rayB, seedB, albedoB).b;
+        Ray rayG = generateRay(pixel, seedG, u_lcaDelta.g, bnJitter);
+        float radG = traceRadiance(rayG, seedG, albG, gbG).g;
 
-        radiance       = vec3(radR, radG, radB);
-        firstHitAlbedo = albedoG; // green channel dominates luminance
+        Ray rayB = generateRay(pixel, seedB, u_lcaDelta.b, bnJitter);
+        float radB = traceRadiance(rayB, seedB, albB, gbB).b;
+
+        radiance = vec3(radR, radG, radB);
+        sAlbedo  = albG;
+        sGBuffer = gbG;
     } else {
         uint seed = initSeed(pixel, u_frameIndex);
-        Ray ray = generateRay(pixel, seed, 0.0);
-        radiance = traceRadiance(ray, seed, firstHitAlbedo);
+        Ray ray = generateRay(pixel, seed, 0.0, bnJitter);
+        radiance = traceRadiance(ray, seed, sAlbedo, sGBuffer);
     }
 
     if (any(isnan(radiance)) || any(isinf(radiance))) radiance = vec3(0.0);
 
-    // Accumulate sum(luma²) for per-pixel variance estimation in the denoiser.
     float lumaVal = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
     float lumaSq  = lumaVal * lumaVal;
 
     if (u_frameIndex == 0) {
         imageStore(u_accumBuffer,    pixel, vec4(radiance, 1.0));
         imageStore(u_varianceBuffer, pixel, vec4(lumaSq, 0.0, 0.0, 0.0));
-
-        // G-buffers are static during accumulation — write on first frame only.
-        uint gbufSeed = initSeed(pixel, 99991);
-        Ray  gbufRay  = generateRay(pixel, gbufSeed, 0.0);
-        imageStore(u_gBuffer, pixel, sampleGBuffer(gbufRay));
-        imageStore(u_gAlbedo, pixel, vec4(firstHitAlbedo, 1.0));
+        imageStore(u_gBuffer,        pixel, sGBuffer);
+        imageStore(u_gAlbedo,        pixel, vec4(sAlbedo, 1.0));
     } else {
-        vec4 prev = imageLoad(u_accumBuffer, pixel);
-        imageStore(u_accumBuffer, pixel, prev + vec4(radiance, 1.0));
-
+        vec4  prev       = imageLoad(u_accumBuffer,    pixel);
         float prevLumaSq = imageLoad(u_varianceBuffer, pixel).r;
+        imageStore(u_accumBuffer,    pixel, prev + vec4(radiance, 1.0));
         imageStore(u_varianceBuffer, pixel, vec4(prevLumaSq + lumaSq, 0.0, 0.0, 0.0));
     }
 }

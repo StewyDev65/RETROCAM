@@ -5,6 +5,7 @@ import com.retrocam.camera.ThinLensCamera;
 import com.retrocam.camera.CameraView;
 import com.retrocam.gl.ShaderProgram;
 import com.retrocam.scene.SceneUploader;
+import com.retrocam.gl.BlueNoiseTexture;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
 import static org.lwjgl.opengl.GL11.GL_NEAREST;
@@ -30,6 +31,8 @@ import static org.lwjgl.opengl.GL43.*;
 import static org.lwjgl.opengl.GL30.GL_R32F;
 import static org.lwjgl.opengl.GL30.GL_RGBA16F;
 import static org.lwjgl.opengl.GL15.GL_WRITE_ONLY;
+import static org.lwjgl.opengl.GL13.GL_TEXTURE0;
+import static org.lwjgl.opengl.GL13.glActiveTexture;
 
 /**
  * Manages the progressive path-tracing accumulation loop.
@@ -45,6 +48,7 @@ public final class Renderer {
     private int   gBufferTexture;
     private int   gAlbedoTexture;
     private int   varianceTexture;
+    private BlueNoiseTexture blueNoise;
     private int   totalSamples = 0;
 
     private static final int RENDER_W = RenderSettings.RENDER_WIDTH;
@@ -58,6 +62,7 @@ public final class Renderer {
         gBufferTexture  = createGBufferTexture();
         gAlbedoTexture  = createGAlbedoTexture();
         varianceTexture = createVarianceTexture();
+        blueNoise = new BlueNoiseTexture();
         System.out.println("[Renderer] Ready.");
     }
 
@@ -82,6 +87,11 @@ public final class Renderer {
         glBindImageTexture(1, gBufferTexture, 0, false, 0, GL_WRITE_ONLY,  GL_RGBA16F);
         glBindImageTexture(2, gAlbedoTexture,  0, false, 0, GL_WRITE_ONLY,  GL_RGBA16F);
         glBindImageTexture(3, varianceTexture, 0, false, 0, GL_READ_WRITE,  GL_R32F);
+
+        // Bind blue-noise texture (sampler unit 0 — separate from image units)
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blueNoise.texId());
+        pathTraceShader.setInt("u_blueNoise", 0);
 
         // Camera + optical uniforms (Phase 4: includes SA, LCA, IIR focal dist)
         tlc.uploadTo(pathTraceShader, orbit, settings, temporal);
@@ -145,6 +155,7 @@ public final class Renderer {
         if (gBufferTexture != 0) glDeleteTextures(gBufferTexture);
         if (gAlbedoTexture  != 0) glDeleteTextures(gAlbedoTexture);
         if (varianceTexture != 0) glDeleteTextures(varianceTexture);
+        if (blueNoise != null) blueNoise.destroy();
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
